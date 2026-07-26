@@ -1,0 +1,1995 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  ============================================================================
+  DECK: Running tens of thousands of etcd clusters in production at SAP Gardener
+  THEME: Grid Discipline (Swiss International Typographic)
+  VENUE: Kubernetes Bangalore Meetup, VMware Bengaluru, 26 July 2026
+  SPEAKERS: Anvesh Reddy Pinnapureddy, Seshachalam YV (verbal handoff; notes in comments)
+
+  PALETTE (one accent per slide; green/cobalt used only inside diagrams):
+    paper #fafafa  ink #111111  secondary #767676  hair #dcdcdc
+    accent red #e30613 (emphasis, GC, corruption)
+    etcd green #2e9e5b   cobalt #3a5bd9   soft-red #f3d5d8 (diagram fills only)
+  FONTS: Inter (system fallback), mono SF Mono / JetBrains Mono. No network load.
+  SCALE: perfect-fourth 12/16/21/28/37/49/64.
+
+  ENGINE: self-contained. Slides are <section class="slide">. Steps within a
+    slide use [data-step] elements revealed by Right/Space; Left steps back.
+    Nav: Right/Space/PageDown next-step, Left/PageUp prev-step, Home/End jump,
+    "g" toggles the column grid overlay. prefers-reduced-motion honored.
+  REPRODUCE: edit :root tokens; add <section class="slide"> blocks; the engine
+    indexes them and their [data-step] children automatically. No build step.
+  ============================================================================
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Running tens of thousands of etcd clusters - SAP Gardener</title>
+<style>
+  :root{
+    --paper:#fafafa; --ink:#111111; --secondary:#767676; --hair:#dcdcdc;
+    --accent:#e30613;
+    --green:#2e9e5b; --green-soft:#dcefe3;
+    --cobalt:#3a5bd9; --cobalt-soft:#dbe1f8;
+    --soft-red:#f3d5d8;
+
+    --t12:12px; --t14:14px; --t16:16px; --t21:21px; --t28:28px;
+    --t37:37px; --t49:49px; --t64:64px;
+
+    --cols:12; --gutter:24px; --margin:clamp(30px,4.6vw,84px);
+    --font:"Inter","Helvetica Neue","Segoe UI",Arial,sans-serif;
+    --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--paper); color:var(--ink); font-family:var(--font);
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; overflow:hidden;
+  }
+
+  /* deck / slide scaffold */
+  #deck{position:fixed;inset:0}
+  .slide{
+    position:absolute;inset:0; padding:var(--margin);
+    display:grid; grid-template-columns:repeat(var(--cols),1fr);
+    column-gap:var(--gutter); align-content:center;
+    opacity:0; visibility:hidden; pointer-events:none;
+  }
+  .slide.is-active{opacity:1;visibility:visible;pointer-events:auto;animation:fade 140ms linear both}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+
+  /* column grid overlay (toggle with g) */
+  .grid-overlay{position:absolute;inset:var(--margin);display:grid;
+    grid-template-columns:repeat(var(--cols),1fr);column-gap:var(--gutter);
+    pointer-events:none;z-index:0;opacity:0;transition:opacity 120ms}
+  body.show-grid .grid-overlay{opacity:1}
+  .grid-overlay span{border-left:1px solid rgba(17,17,17,.06)}
+  .grid-overlay span:last-child{border-right:1px solid rgba(17,17,17,.06)}
+  .slide > *:not(.grid-overlay):not(.logo){position:relative;z-index:1}
+
+  /* shared type */
+  .kicker{font-size:var(--t12);letter-spacing:.22em;text-transform:uppercase;color:var(--secondary);font-weight:600}
+  h1{font-size:clamp(44px,7.4vw,104px);line-height:.98;letter-spacing:-.02em;font-weight:800;text-wrap:balance}
+  h2{font-size:clamp(34px,5.4vw,var(--t64));line-height:1.02;letter-spacing:-.02em;font-weight:800;text-wrap:balance}
+  h3{font-size:clamp(26px,3.4vw,var(--t37));line-height:1.05;letter-spacing:-.01em;font-weight:800}
+  .lead{font-size:clamp(17px,1.9vw,var(--t21));line-height:1.5;max-width:62ch}
+  .muted{color:var(--secondary)} .accent{color:var(--accent)}
+  .mono{font-family:var(--mono)}
+  strong{font-weight:700}
+
+  .rule-accent{height:3px;background:var(--accent);border:0;width:96px}
+  .rule-hair{height:1px;background:var(--hair);border:0;width:100%}
+  .head-block{grid-column:1 / span 12}
+
+  /* step reveal: hidden until activated */
+  [data-step]{opacity:0;transform:translateY(14px);transition:opacity .32s ease,transform .32s cubic-bezier(.2,.7,.2,1)}
+  [data-step].on{opacity:1;transform:none}
+
+  /* enter animation for a freshly shown slide's base content */
+  .slide.is-active .slide-in{animation:slidein 300ms cubic-bezier(.2,.7,.2,1) both}
+  @keyframes slidein{from{transform:translateY(20px);opacity:0}to{transform:none;opacity:1}}
+
+  /* hero numeral */
+  .hero-num{font-size:clamp(120px,26vw,340px);line-height:.82;letter-spacing:-.045em;font-weight:800}
+
+  /* lists shared */
+  .rows{display:grid}
+  .row{display:grid;grid-template-columns:30px 1fr;gap:14px;align-items:baseline;padding:13px 0;border-top:1px solid var(--hair)}
+  .row:last-child{border-bottom:1px solid var(--hair)}
+  .row .idx{font-size:var(--t12);color:var(--secondary);font-variant-numeric:tabular-nums;letter-spacing:.1em}
+  .row .label{font-size:var(--t16);font-weight:600}
+  .row .sub{font-size:var(--t14);color:var(--secondary);margin-top:3px;font-weight:400}
+
+  /* code blocks */
+  pre.code{font-family:var(--mono);font-size:clamp(12px,1.05vw,15px);line-height:1.65;
+    background:#fff;border:1px solid var(--hair);border-left:3px solid var(--accent);
+    padding:20px 22px;color:var(--ink);overflow:auto;white-space:pre;tab-size:2}
+  .code .key{color:var(--ink);font-weight:600}
+  .code .val{color:var(--secondary)}
+  .code .num{color:var(--accent);font-weight:600}
+  .code .str{color:var(--green)}
+  .code .cmt{color:#a0a0a0;font-style:italic}
+  .code .hl{background:#fff5f5;display:inline-block;width:100%}
+  .codecap{font-size:var(--t12);letter-spacing:.16em;text-transform:uppercase;color:var(--secondary)}
+
+  /* CR walkthrough (slide 16) */
+  #crlist .critem{padding:12px 0 12px 16px;border-top:1px solid var(--hair);border-left:3px solid transparent;
+    display:flex;flex-direction:column;gap:3px;opacity:.45;transition:opacity .2s,border-color .2s,background .2s}
+  #crlist .critem:last-child{border-bottom:1px solid var(--hair)}
+  #crlist .critem .cn{font-family:var(--mono);font-size:var(--t16);font-weight:700}
+  #crlist .critem .cd{font-size:var(--t14);color:var(--secondary)}
+  #crlist .critem.active{opacity:1;border-left-color:var(--accent);background:#fff}
+  .code .crseg{display:block;border-left:3px solid transparent;padding-left:10px;margin-left:-13px;transition:background .2s,border-color .2s}
+  .code .crseg.lit{background:#fff5f5;border-left-color:var(--accent)}
+
+  /* chip / pill */
+  .chip{font-family:var(--mono);font-size:13px;border:1px solid var(--hair);padding:6px 11px;color:var(--secondary);white-space:nowrap}
+  .chip.hot{border-color:var(--accent);color:var(--accent)}
+  .chip.ok{border-color:var(--green);color:var(--green)}
+  .chip.cobalt{border-color:var(--cobalt);color:var(--cobalt)}
+  .badge{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;padding:3px 8px;border:1px solid var(--hair);color:var(--secondary);text-transform:uppercase}
+  .badge.soon{border-color:var(--accent);color:var(--accent)}
+
+  /* placeholder frame (memes) */
+  .frame{border:1px dashed #c4c4c4;background:#fff;display:flex;flex-direction:column;
+    align-items:flex-start;justify-content:center;gap:10px;padding:26px 28px;min-height:150px}
+  .frame .tag{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--secondary)}
+  .frame .quip{font-size:clamp(18px,2.4vw,28px);font-weight:700;line-height:1.15;max-width:34ch}
+  /* slide 13: single-member disaster-girl meme (caption is baked into the image) */
+  .s13meme{border:1px solid var(--hair);background:#fff;line-height:0}
+  .s13meme img{display:block;width:100%;height:auto;object-fit:cover}
+
+  /* hands-up (slide 2): centered single-line questions */
+  .s2q{white-space:nowrap}
+  .s2t{font-size:clamp(28px,4.4vw,60px);font-weight:700;letter-spacing:-.015em;line-height:1.05}
+
+  /* Gardener capabilities (slide 4): vertical, equal-spaced, big */
+  .s4list{display:flex;flex-direction:column}
+  .s4item{padding:clamp(16px,2.4vh,26px) 0;border-top:1px solid var(--hair)}
+  .s4item:last-child{border-bottom:1px solid var(--hair)}
+  .s4t{font-size:clamp(20px,2.3vw,30px);font-weight:700;letter-spacing:-.01em;line-height:1.15}
+  .s4s{font-family:var(--mono);font-size:clamp(13px,1.3vw,16px);color:var(--secondary);margin-top:8px}
+
+  /* operator loop (slide 11): spaced mono pills */
+  .s10loop{display:flex;flex-wrap:wrap;align-items:center;gap:clamp(12px,1.4vw,20px)}
+  .s10step{font-family:var(--mono);font-weight:700;font-size:clamp(18px,2.2vw,30px);
+    border:1px solid var(--hair);background:#fff;padding:10px 18px;border-radius:4px;line-height:1}
+  .s10arw{font-family:var(--mono);font-size:clamp(16px,1.8vw,24px);color:var(--secondary)}
+
+  /* slide 13: continuous reconciliation ring around etcd-druid */
+  .s12ring{transform-origin:268px 171px;animation:s12spin 6s linear infinite}
+  @keyframes s12spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+  /* slide 11: continuous operator loop ring */
+  .s10ring{transform-origin:180px 160px;animation:s12spin 7s linear infinite}
+  .s19ring{transform-origin:660px 140px;animation:s12spin 6s linear infinite}
+
+  /* slide 15 HA list (left): active item highlights as we step */
+  #s14list{list-style:none}
+  #s14list .s14item{display:flex;flex-direction:column;gap:4px;padding:16px 0 16px 16px;border-top:1px solid var(--hair);border-left:3px solid transparent;opacity:.4;transition:opacity .25s,border-color .25s,background .25s}
+  #s14list .s14item:last-child{border-bottom:1px solid var(--hair)}
+  #s14list .s14t{font-size:clamp(17px,2vw,26px);font-weight:700;letter-spacing:-.01em}
+  #s14list .s14s{font-family:var(--mono);font-size:clamp(12px,1.3vw,15px);color:var(--secondary)}
+  #s14list .s14item.active{opacity:1;border-left-color:var(--accent);background:#fff}
+
+  /* corner logos (bare on paper) */
+  .logo{position:absolute;z-index:2;pointer-events:none}
+  .logo img{display:block}
+  .logo.tl{top:var(--margin);left:var(--margin)}
+  .logo.tr{top:var(--margin);right:var(--margin)}
+  .logo.br{bottom:var(--margin);right:var(--margin)}
+  .logo.bl{bottom:var(--margin);left:var(--margin)}
+
+  /* chrome */
+  .chrome{position:fixed;inset:0;pointer-events:none;z-index:20}
+  /* deck header: Gardener + NeoNephos logos, top-left, on every content slide */
+  .deck-header{position:absolute;top:var(--margin);left:var(--margin);display:flex;align-items:center;gap:clamp(14px,1.4vw,22px)}
+  .deck-header img{display:block}
+  .deck-header img[alt="Gardener"]{height:clamp(30px,3vw,42px)}
+  .deck-header img[alt="NeoNephos Foundation"]{height:clamp(20px,2vw,28px)}
+  .deck-header .hdr-sep{width:1px;height:clamp(22px,2.4vw,32px);background:var(--hair)}
+  .counter{display:none;position:absolute;top:var(--margin);right:var(--margin);font-size:var(--t12);letter-spacing:.16em;color:var(--secondary);font-variant-numeric:tabular-nums}
+  .counter b{color:var(--accent);font-weight:700}
+  /* slide 18: adopters + governance */
+  .s18grid{display:grid;grid-template-columns:repeat(4,1fr);gap:clamp(20px,3vw,44px);margin-top:clamp(24px,4vh,44px)}
+  .s18cell{display:flex;flex-direction:column;align-items:center;text-align:center;gap:14px}
+  .s18tray{height:clamp(52px,6vh,72px);display:flex;align-items:center;justify-content:center}
+  .s18tray img{display:block;max-width:100%;object-fit:contain}
+  .s18name{font-size:var(--t16);font-weight:700;letter-spacing:-.01em}
+  .s18sub{font-size:var(--t12);color:var(--secondary);margin-top:-6px}
+  /* per-logo optical sizing so all read at the same visual weight */
+  .s18-sap{height:clamp(40px,4.6vh,54px)}
+  .s18-akamai{height:clamp(34px,4vh,46px)}
+  .s18-stackit{height:clamp(46px,5.4vh,64px)}
+  .s18-scaleway{height:clamp(48px,5.6vh,66px)}
+  .s18gov{display:flex;align-items:center;justify-content:center;gap:clamp(20px,3vw,40px);flex-wrap:wrap;margin-top:clamp(26px,5vh,52px)}
+  .s18gov .s18govtxt{font-size:clamp(17px,1.9vw,23px);line-height:1.5;max-width:36ch;text-align:left}
+  .s18gov .nn-neo{color:#333;font-weight:800}
+  .s18gov .nn-nephos{color:#0f6bff;font-weight:800}
+  .s18gov img[alt="Linux Foundation Europe"]{height:clamp(40px,4.6vh,56px);display:block}
+  .s18gov img[alt="NeoNephos Foundation"]{height:clamp(34px,4vh,48px);display:block}
+  .s18gov .s18sep{width:1px;height:clamp(40px,5vh,60px);background:var(--hair)}
+  /* slide 21: QR code cards */
+  .s20qr{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(14px,1.8vw,24px)}
+  .s20qrcard{display:flex;flex-direction:column;align-items:center;gap:12px}
+  .s20qrcard img{width:100%;max-width:180px;aspect-ratio:1;display:block;border:1px solid var(--hair);background:#fff;padding:8px;box-sizing:border-box}
+  .s20qrlbl{font-family:var(--mono);font-size:clamp(12px,1.25vw,15px);font-weight:700;color:var(--ink);text-align:center;line-height:1.25}
+  /* on the title/closing slides, hide the header + counter so their own layout owns the corners */
+  body.on-title .deck-header, body.on-title .counter{opacity:0}
+  /* slides that place their own top-left logo (e.g. Gardener on slide 4) hide the shared header */
+  body.on-logo-tl .deck-header{opacity:0}
+  .progress{position:absolute;left:var(--margin);right:var(--margin);bottom:calc(var(--margin) - 20px);height:1px;background:var(--hair)}
+  .progress .fill{height:1px;background:var(--accent);width:0;transition:width 220ms cubic-bezier(.2,.7,.2,1)}
+  .navzone{position:absolute;top:0;bottom:0;width:16%;pointer-events:auto;cursor:pointer}
+  .navzone.prev{left:0} .navzone.next{right:0}
+  .arrows{position:absolute;right:var(--margin);bottom:calc(var(--margin) - 6px);display:flex;gap:9px;pointer-events:auto}
+  .arrows button{font-family:var(--font);background:transparent;border:1px solid var(--hair);color:var(--ink);
+    width:36px;height:36px;font-size:15px;cursor:pointer;line-height:1;transition:border-color .12s,color .12s}
+  .arrows button:hover{border-color:var(--accent);color:var(--accent)}
+
+  @media (prefers-reduced-motion:reduce){
+    .slide.is-active{animation:none}
+    .slide.is-active .slide-in{animation:none}
+    [data-step]{transition:none}
+    .progress .fill{transition:none}
+    .s12ring{animation:none}
+    .s10ring{animation:none}
+    .s19ring{animation:none}
+    *{scroll-behavior:auto}
+  }
+</style>
+</head>
+<body>
+<div id="deck">
+  <!-- ============ SLIDE 1 : TITLE ============
+       Speaker notes: Good morning. Today we share 8+ years of running production
+       etcd at Gardener scale, and the open-source tools we built to make it
+       self-healing. Introduce both speakers and roles. -->
+  <section class="slide title-slide" id="s1">
+    <div class="grid-overlay"></div>
+    <!-- top-left: Gardener + NeoNephos paired; SAP top-right -->
+    <div class="logo tl" style="display:flex;align-items:center;gap:clamp(16px,1.6vw,26px)">
+      <img src="../images/logos/gardener.png" alt="Gardener" style="height:clamp(46px,5vw,72px)">
+      <span style="width:1px;height:clamp(34px,3.6vw,52px);background:var(--hair)"></span>
+      <img src="../images/logos/neonephos-foundation-horizontal-color.svg" alt="NeoNephos Foundation" style="height:clamp(30px,3.4vw,50px)">
+    </div>
+    <div class="logo tr"><img src="../images/logos/SAP.svg" alt="SAP" style="height:clamp(38px,4.2vw,58px)"></div>
+
+    <div class="head-block slide-in">
+      <hr class="rule-accent" style="margin:0 0 26px;width:120px;height:4px">
+      <h1 style="font-size:clamp(44px,6.6vw,96px);line-height:1.0;max-width:20ch">Running tens of thousands of <span class="accent">etcd clusters</span> in production</h1>
+      <p style="font-size:clamp(16px,1.9vw,24px);font-weight:700;margin-top:clamp(22px,3.5vh,40px)">etcd-druid&nbsp;&nbsp;.&nbsp;&nbsp;etcd-backup-restore&nbsp;&nbsp;.&nbsp;&nbsp;etcd-wrapper</p>
+      <div style="display:flex;flex-wrap:wrap;gap:clamp(32px,5vw,88px);margin-top:clamp(24px,4vh,44px)">
+        <div>
+          <div style="font-size:clamp(20px,2.3vw,30px);font-weight:700;letter-spacing:-.01em">Anvesh Reddy Pinnapureddy</div>
+          <div class="kicker" style="margin-top:8px;font-size:var(--t14)">Software Engineer II&nbsp;&nbsp;.&nbsp;&nbsp;SAP Gardener</div>
+        </div>
+        <div>
+          <div style="font-size:clamp(20px,2.3vw,30px);font-weight:700;letter-spacing:-.01em">Seshachalam YV</div>
+          <div class="kicker" style="margin-top:8px;font-size:var(--t14)">Senior Software Engineer&nbsp;&nbsp;.&nbsp;&nbsp;SAP Gardener</div>
+        </div>
+      </div>
+      <p class="muted" style="font-size:clamp(14px,1.6vw,19px);margin-top:clamp(20px,3vh,34px)">Kubernetes Bangalore Meetup&nbsp;&nbsp;.&nbsp;&nbsp;VMware, Bengaluru&nbsp;&nbsp;.&nbsp;&nbsp;26 July 2026</p>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 2 : HANDS UP ============
+       Speaker notes: Quick show of hands: who runs their own etcd in production?
+       Now, who has had to recover a broken one manually? Hopefully after today
+       you will never have to do that by hand again. -->
+  <section class="slide" id="s2">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in" style="text-align:center">
+      <p class="kicker">Before we start</p>
+      <hr class="rule-accent" style="margin:22px auto 40px;width:96px">
+      <h2 style="font-weight:800;font-size:clamp(40px,6vw,80px)">Raise your hand if&hellip;</h2>
+    </div>
+    <div class="head-block" style="margin-top:clamp(36px,6vh,72px);display:grid;gap:clamp(20px,3.4vh,44px);justify-items:center;text-align:center">
+      <div class="s2q" data-step="1">
+        <span class="s2t">you have heard of <span class="accent">etcd</span></span>
+      </div>
+      <div class="s2q" data-step="2">
+        <span class="s2t">you have managed <span class="accent">etcd</span> directly</span>
+      </div>
+      <div class="s2q" data-step="3">
+        <span class="s2t">you have <span class="accent">restored</span> an etcd snapshot by hand</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 3 : WHAT IS ETCD ============
+       Speaker notes: etcd = /etc + d, the distributed "/etc". Every resource you
+       create in a cluster becomes a write into etcd: a pod, a CRD, a secret. It
+       is the single source of truth for the entire cluster. -->
+  <section class="slide" id="s3">
+    <div class="grid-overlay"></div>
+    <div class="head-block" style="display:grid;grid-template-columns:1.25fr .75fr;gap:clamp(36px,6vw,80px);align-items:center">
+      <div class="slide-in">
+        <p class="kicker">What is etcd</p>
+        <hr class="rule-accent" style="margin:20px 0 26px">
+        <div data-step="1" style="font-family:var(--mono);font-size:clamp(40px,6.4vw,88px);font-weight:700;letter-spacing:-.02em;line-height:1">
+          /etc <span class="muted">+</span> <span class="accent">d</span>
+        </div>
+        <h2 data-step="2" style="font-size:clamp(28px,3.4vw,44px);margin-top:clamp(20px,3vh,32px)">etcd is the <span class="accent">heart</span> of Kubernetes.</h2>
+        <p class="lead muted" data-step="3" style="margin-top:14px;font-size:clamp(17px,1.9vw,22px)">A strongly-consistent, distributed key-value store. The single source of truth for your entire cluster.</p>
+        <!-- everything-is-a-write block, moved below the left content -->
+        <div data-step="4" style="margin-top:clamp(22px,3.5vh,36px)">
+          <p style="font-size:clamp(15px,1.6vw,19px);font-weight:800;color:var(--ink);letter-spacing:.01em;margin-bottom:14px">Everything is a write into <span class="accent">etcd</span>.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:10px">
+            <span class="chip">Pods</span><span class="chip">Deployments</span><span class="chip">StatefulSets</span>
+            <span class="chip">Secrets</span><span class="chip">ConfigMaps</span><span class="chip">Nodes</span>
+            <span class="chip">Leases</span><span class="chip">CRDs</span><span class="chip">Custom resources</span>
+          </div>
+        </div>
+      </div>
+      <div class="s13meme" data-step="2" style="max-width:340px;justify-self:center">
+        <img src="../images/memes/etcd.png" alt="etcd holds up all cloud native infrastructure">
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 4 : GARDENER ============
+       Speaker notes: Say you need a cluster on AWS, another on GCP, another on
+       Azure. Some sleep at night, some need upgrades, some fail. A few dozen is
+       easy, hundreds is fine, but thousands? That is Gardener: Kubernetes
+       Clusters as a Service, provisioning and orchestrating clusters across all
+       major clouds, full lifecycle. (Not the person who tends a garden.) -->
+  <section class="slide" id="s4">
+    <div class="grid-overlay"></div>
+    <div class="head-block" style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(36px,6vw,88px);align-items:center">
+      <div class="slide-in">
+        <p class="kicker">Gardener</p>
+        <hr class="rule-accent" style="margin:20px 0 24px">
+        <h2 style="font-size:clamp(40px,5.6vw,76px)">Kubernetes Clusters <span class="accent">as a Service</span>.</h2>
+        <p class="lead muted" style="margin-top:20px;font-size:clamp(17px,1.9vw,22px)">Gardener manages Kubernetes clusters the way Kubernetes manages pods.</p>
+      </div>
+      <!-- right column: logo card (step 1) and the list (steps 2-5) occupy the same space -->
+      <div style="position:relative;min-height:clamp(260px,42vh,380px);display:flex;align-items:center">
+        <!-- step 1: large Gardener logo + name -->
+        <div id="s4logo" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(18px,3vh,30px);opacity:0;transition:opacity .45s ease">
+          <img src="../images/logos/gardener.png" alt="Gardener" style="width:clamp(120px,16vw,190px);height:auto;display:block">
+          <div style="font-size:clamp(40px,5.4vw,74px);font-weight:800;letter-spacing:-.02em">Gardener</div>
+        </div>
+        <!-- steps 2-5: the point list -->
+        <div class="s4list" id="s4list" style="width:100%;opacity:0;transition:opacity .45s ease">
+          <div class="s4item"><div class="s4t">Open-source Kubernetes as a Service</div></div>
+          <div class="s4item"><div class="s4t">Hosted control planes</div></div>
+          <div class="s4item"><div class="s4t">Multi-cloud, provider agnostic</div><div class="s4s">AWS . GCP . Azure . OpenStack . AliCloud . and more</div></div>
+          <div class="s4item"><div class="s4t">Create . upgrade . hibernate . delete</div></div>
+        </div>
+      </div>
+    </div>
+    <!-- step anchors: 1=logo, 2-5=list items -->
+    <span data-step="1" style="display:none"></span><span data-step="2" style="display:none"></span><span data-step="3" style="display:none"></span><span data-step="4" style="display:none"></span><span data-step="5" style="display:none"></span>
+  </section>
+
+  <!-- ============ SLIDE 5 : GARDENER AT SCALE ============
+       Speaker notes: At Gardener we operate tens of thousands of Kubernetes
+       control planes, and each shoot has TWO etcd clusters: etcd-main (all
+       cluster-critical objects) and etcd-events (Event objects, short-lived).
+       So the etcd count is 2x the cluster count. Shoot control planes and their
+       etcd run as pods inside a seed cluster. Managing etcd at this scale is
+       where our story begins: etcd is the heart, and if it dies, it dies. -->
+  <section class="slide" id="s5">
+    <div class="grid-overlay"></div>
+    <div class="head-block" style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(36px,6vw,80px);align-items:center">
+      <!-- left: all the text content -->
+      <div class="slide-in">
+        <p class="kicker">Gardener at scale</p>
+        <hr class="rule-accent" style="margin:20px 0 24px">
+        <h2 style="font-size:clamp(34px,4.4vw,58px);line-height:1.05">Tens of thousands of control planes. <span class="accent">Twice as many</span> etcd clusters.</h2>
+        <div class="s4list" style="margin-top:clamp(20px,3vh,34px)">
+          <div class="s4item" data-step="1">
+            <div class="s4t">etcd-main</div>
+            <div class="s4s">all cluster-critical objects, backed up</div>
+          </div>
+          <div class="s4item" data-step="2">
+            <div class="s4t">etcd-events</div>
+            <div class="s4s">Event objects, high churn, short retention</div>
+          </div>
+        </div>
+      </div>
+      <!-- right: staged Garden -> Seed -> Shoot hierarchy -->
+      <div>
+        <svg viewBox="0 0 480 356" width="100%" style="display:block;max-width:100%" role="img" aria-label="Bottom-up Gardener hierarchy: two shoot clusters; their control planes with etcd-main and etcd-events are hosted in a seed cluster; the seed control plane is hosted in the garden cluster; hosting arrows point upward from the hosted cluster to its host">
+          <g font-family="var(--mono)" font-size="12">
+            <!-- Garden cluster (revealed last) -->
+            <g class="s5garden" opacity="0">
+              <rect x="120" y="4" width="240" height="66" rx="4" fill="var(--cobalt-soft)" stroke="var(--cobalt)"/>
+              <text x="240" y="32" text-anchor="middle" font-weight="700" fill="var(--cobalt)" font-size="13">Garden cluster</text>
+              <text x="240" y="50" text-anchor="middle" font-size="10" fill="var(--secondary)">hosts seed control plane</text>
+              <!-- arrow up into garden -->
+              <line x1="240" y1="100" x2="240" y2="70" stroke="var(--ink)" stroke-width="1.5" marker-end="url(#ah5up)"/>
+            </g>
+
+            <!-- Seed cluster (revealed second): holds each shoot's control plane (with 2 etcds) -->
+            <g class="s5seed" opacity="0">
+              <rect x="30" y="102" width="420" height="150" rx="4" fill="#fff" stroke="var(--green)"/>
+              <text x="44" y="122" font-weight="700" fill="var(--green)" font-size="13">Seed cluster</text>
+              <text x="44" y="137" font-size="10" fill="var(--secondary)">hosts shoot control planes</text>
+              <!-- shoot-a control plane -->
+              <rect x="44" y="144" width="190" height="98" rx="3" fill="var(--green-soft)" stroke="var(--green)"/>
+              <text x="139" y="162" text-anchor="middle" fill="var(--green)" font-size="10">shoot-a control plane</text>
+              <rect x="56" y="170" width="166" height="28" rx="3" fill="#fff" stroke="var(--green)"/>
+              <text x="139" y="188" text-anchor="middle" fill="var(--green)" font-weight="700" font-size="11">etcd-main</text>
+              <rect x="56" y="206" width="166" height="28" rx="3" fill="#fff" stroke="var(--cobalt)"/>
+              <text x="139" y="224" text-anchor="middle" fill="var(--cobalt)" font-weight="700" font-size="11">etcd-events</text>
+              <!-- shoot-b control plane -->
+              <rect x="246" y="144" width="190" height="98" rx="3" fill="var(--green-soft)" stroke="var(--green)"/>
+              <text x="341" y="162" text-anchor="middle" fill="var(--green)" font-size="10">shoot-b control plane</text>
+              <rect x="258" y="170" width="166" height="28" rx="3" fill="#fff" stroke="var(--green)"/>
+              <text x="341" y="188" text-anchor="middle" fill="var(--green)" font-weight="700" font-size="11">etcd-main</text>
+              <rect x="258" y="206" width="166" height="28" rx="3" fill="#fff" stroke="var(--cobalt)"/>
+              <text x="341" y="224" text-anchor="middle" fill="var(--cobalt)" font-weight="700" font-size="11">etcd-events</text>
+              <!-- arrows up into the seed (same length as the garden arrow) -->
+              <line x1="139" y1="286" x2="139" y2="256" stroke="var(--ink)" stroke-width="1.5" marker-end="url(#ah5up)"/>
+              <line x1="341" y1="286" x2="341" y2="256" stroke="var(--ink)" stroke-width="1.5" marker-end="url(#ah5up)"/>
+            </g>
+
+            <!-- Two shoot clusters (revealed first): just the end-user clusters -->
+            <g class="s5shoots" opacity="0">
+              <rect x="44" y="288" width="190" height="52" rx="4" fill="#fbfbfb" stroke="var(--secondary)" stroke-dasharray="4 3"/>
+              <text x="139" y="312" text-anchor="middle" fill="var(--ink)" font-weight="700">shoot-a</text>
+              <text x="139" y="328" text-anchor="middle" fill="var(--secondary)" font-size="10">end-user cluster</text>
+              <rect x="246" y="288" width="190" height="52" rx="4" fill="#fbfbfb" stroke="var(--secondary)" stroke-dasharray="4 3"/>
+              <text x="341" y="312" text-anchor="middle" fill="var(--ink)" font-weight="700">shoot-b</text>
+              <text x="341" y="328" text-anchor="middle" fill="var(--secondary)" font-size="10">end-user cluster</text>
+            </g>
+          </g>
+          <defs><marker id="ah5up" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--ink)"/></marker></defs>
+        </svg>
+        <div class="head-block" data-step="7" style="margin-top:16px;border:1px solid var(--accent);background:#fff;padding:14px 18px;display:flex;justify-content:center;align-items:center">
+          <span class="mono" style="font-size:clamp(14px,1.5vw,18px);font-weight:700;text-align:center"><span class="accent">2 etcds</span> per shoot, tens of thousands of shoots</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 6 : THE JOURNEY BEGINS [2018] ============
+       Speaker notes: It started in 2018 when Gardener was gearing up for a few
+       hundred clusters. We needed provisioning and disaster-recovery guarantees.
+       We deployed single-node etcd via Helm (lean, fast, no peer chatter), and
+       our focus was DR. No existing tool fit, so we built one co-located with
+       etcd that reads the data directory directly and performs DR: full
+       snapshots uploaded to cloud object stores. That is etcd-backup-restore. -->
+  <section class="slide" id="s6">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">The journey begins&nbsp;&nbsp;/&nbsp;&nbsp;2018</p>
+      <hr class="rule-accent" style="margin:20px 0 22px">
+      <h2 style="font-size:clamp(34px,4.6vw,62px)">Gardener's first <span class="accent">two requirements</span>.</h2>
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:.82fr 1.18fr;gap:clamp(32px,5vw,72px);align-items:center;margin-top:clamp(18px,3vh,32px)">
+      <div>
+        <div class="s4list">
+          <div class="s4item" data-step="1">
+            <div class="s4t">Provision a single-member etcd</div>
+            <div class="s4s">lean and fast, no peer round-trips</div>
+          </div>
+          <div class="s4item" data-step="2">
+            <div class="s4t">Disaster recovery</div>
+            <div class="s4s">multi-provider backups and restore</div>
+          </div>
+        </div>
+        <p class="muted" data-step="6" style="font-size:clamp(14px,1.4vw,17px);margin-top:20px;line-height:1.5">No tool fit, so we built one co-located with etcd. That is <strong>etcd-backup-restore</strong>.</p>
+      </div>
+      <div>
+        <svg viewBox="0 0 760 300" width="100%" style="display:block;max-width:100%" role="img" aria-label="Helm creates a StatefulSet, which runs a pod with two containers, etcd and a backup-restore sidecar; the sidecar uploads full snapshots to a cloud object store">
+          <g font-family="var(--mono)" font-size="15">
+            <!-- helm -->
+            <g class="s6helm" opacity="0">
+              <rect x="4" y="118" width="82" height="60" rx="3" fill="#fff" stroke="var(--hair)"/>
+              <text x="45" y="153" text-anchor="middle" fill="var(--secondary)">helm</text>
+              <line x1="86" y1="148" x2="122" y2="148" stroke="var(--ink)" stroke-width="1.5" marker-end="url(#ah6)"/>
+            </g>
+            <!-- statefulset -->
+            <g class="s6sts" opacity="0">
+              <rect x="124" y="118" width="116" height="60" rx="3" fill="#fff" stroke="var(--ink)"/>
+              <text x="182" y="144" text-anchor="middle" font-size="14" font-weight="700">StatefulSet</text>
+              <text x="182" y="162" text-anchor="middle" font-size="11" fill="var(--secondary)">replicas: 1</text>
+              <line x1="240" y1="148" x2="276" y2="148" stroke="var(--ink)" stroke-width="1.5" marker-end="url(#ah6)"/>
+            </g>
+            <!-- pod: two peer containers, no inter-container arrow -->
+            <g class="s6pod" opacity="0">
+              <rect x="278" y="80" width="196" height="132" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+              <text x="376" y="103" text-anchor="middle" fill="var(--secondary)" font-size="12">POD</text>
+              <polygon points="310,132 335,118 360,132 360,162 335,176 310,162" fill="var(--green-soft)" stroke="var(--green)"/>
+              <circle cx="335" cy="147" r="6" fill="var(--green)"/>
+              <text x="335" y="198" text-anchor="middle" fill="var(--green)" font-size="13">etcd</text>
+              <rect x="382" y="122" width="80" height="52" rx="3" fill="#fff" stroke="var(--green)"/>
+              <text x="422" y="143" text-anchor="middle" fill="var(--ink)" font-size="11">backup-</text>
+              <text x="422" y="159" text-anchor="middle" fill="var(--ink)" font-size="11">restore</text>
+            </g>
+            <!-- object store: height matches the pod, centered text, monotonic full names, newest on top -->
+            <g class="s6store" opacity="0">
+              <line x1="474" y1="148" x2="512" y2="148" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah6g)"/>
+              <rect x="514" y="80" width="222" height="132" rx="3" fill="var(--green-soft)" stroke="var(--green)"/>
+              <text x="625" y="104" text-anchor="middle" fill="var(--green)">object store</text>
+              <text x="625" y="122" text-anchor="middle" fill="var(--secondary)" font-size="11">S3 . GCS . ABS . Swift</text>
+              <g font-size="12" fill="var(--secondary)">
+                <rect x="534" y="134" width="182" height="20" fill="#fff" stroke="var(--green)"/><text x="625" y="148" text-anchor="middle">Full-000-420-T2</text>
+                <rect x="534" y="158" width="182" height="20" fill="#fff" stroke="var(--green)"/><text x="625" y="172" text-anchor="middle">Full-000-260-T1</text>
+                <rect x="534" y="182" width="182" height="20" fill="#fff" stroke="var(--green)"/><text x="625" y="196" text-anchor="middle">Full-000-100-T0</text>
+              </g>
+            </g>
+          </g>
+          <defs>
+            <marker id="ah6" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--ink)"/></marker>
+            <marker id="ah6g" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--green)"/></marker>
+          </defs>
+        </svg>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:22px">
+          <span class="chip" data-step="3">1. helm creates the StatefulSet</span>
+          <span class="chip" data-step="4">2. pod runs etcd + backup-restore</span>
+          <span class="chip ok" data-step="5">3. full snapshots to object store</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 7 : RESTORATION ============
+       Speaker notes: backup-restore validates the data directory; if it decides
+       a restore is needed, it pulls the latest FULL snapshot and rebuilds. But
+       restoring only from the last full means everything written since that full
+       is lost, and with etcd's high churn that can be a lot. You could take
+       fulls more often, but that costs storage and adds CPU/memory pressure on
+       etcd and backup-restore, hurting read/write performance. That tension is
+       what led us to delta snapshots. -->
+  <section class="slide" id="s7">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">Restoration&nbsp;&nbsp;/&nbsp;&nbsp;the first problem</p>
+      <hr class="rule-accent" style="margin:20px 0 20px">
+      <h2>Restore from the last <span class="accent">full</span>.</h2>
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:1.3fr .7fr;gap:clamp(28px,5vw,56px);align-items:center;margin-top:6px">
+      <div>
+        <svg viewBox="0 0 820 300" width="100%" style="display:block;max-width:100%" role="img" aria-label="A pod runs etcd and a backup-restore sidecar with an external PVC; the PVC corrupts, etcd goes unhealthy, backup-restore validates the data directory and detects corruption, then pulls the latest full snapshot from the object store, and etcd becomes healthy again">
+          <g font-family="var(--mono)" font-size="14">
+            <!-- pod with two well-spaced containers -->
+            <rect x="20" y="40" width="300" height="140" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+            <text x="170" y="62" text-anchor="middle" fill="var(--secondary)" font-size="12">POD</text>
+            <!-- etcd (state-colored) -->
+            <polygon id="s7etcd" points="52,96 77,82 102,96 102,124 77,138 52,124" fill="var(--green-soft)" stroke="var(--green)"/>
+            <circle id="s7etcddot" cx="77" cy="110" r="6" fill="var(--green)"/>
+            <text id="s7etcdlbl" x="77" y="160" text-anchor="middle" fill="var(--green)" font-size="13">etcd</text>
+            <!-- backup-restore (spaced to the right) -->
+            <rect x="212" y="84" width="92" height="52" rx="3" fill="#fff" stroke="var(--green)"/>
+            <text x="258" y="106" text-anchor="middle" fill="var(--ink)" font-size="11">backup-</text>
+            <text x="258" y="122" text-anchor="middle" fill="var(--ink)" font-size="11">restore</text>
+
+            <!-- validate arrow: b-r -> etcd, revealed on the validation step -->
+            <g id="s7validate" opacity="0">
+              <line x1="212" y1="110" x2="106" y2="110" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah7red)"/>
+              <text x="159" y="100" text-anchor="middle" font-size="11" fill="var(--accent)">validate</text>
+            </g>
+
+            <!-- PVC outside the pod, linked to etcd -->
+            <line x1="77" y1="138" x2="77" y2="222" stroke="var(--hair)" stroke-width="1.5"/>
+            <rect id="s7pvc" x="40" y="222" width="74" height="44" rx="3" fill="#fff" stroke="var(--hair)"/>
+            <text id="s7pvclbl" x="77" y="248" text-anchor="middle" fill="var(--secondary)" font-size="12">PVC</text>
+
+            <!-- restore arrow: straight from object store center-left to backup-restore center (revealed on restore step) -->
+            <line id="s7restore" x1="572" y1="110" x2="308" y2="110" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah7r)" opacity="0"/>
+            <!-- backup arrow: b-r -> object store, extended close to the store (baseline) -->
+            <line id="s7backup" x1="304" y1="110" x2="570" y2="110" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah7g)"/>
+
+            <!-- object store: newest full on top, consistent names, centered, fits -->
+            <rect x="576" y="40" width="222" height="180" rx="3" fill="var(--green-soft)" stroke="var(--green)"/>
+            <text x="687" y="64" text-anchor="middle" fill="var(--green)">object store</text>
+            <text x="687" y="82" text-anchor="middle" fill="var(--secondary)" font-size="11">one full per day</text>
+            <g font-size="12" fill="var(--secondary)">
+              <rect id="s7latest" x="596" y="96" width="182" height="22" fill="#fff" stroke="var(--green)" stroke-width="2"/><text x="687" y="111" text-anchor="middle" fill="var(--green)">Full-000-580-T3</text>
+              <rect x="596" y="124" width="182" height="22" fill="#fff" stroke="var(--green)"/><text x="687" y="139" text-anchor="middle">Full-000-420-T2</text>
+              <rect x="596" y="152" width="182" height="22" fill="#fff" stroke="var(--green)"/><text x="687" y="167" text-anchor="middle">Full-000-260-T1</text>
+              <rect x="596" y="180" width="182" height="22" fill="#fff" stroke="var(--green)"/><text x="687" y="195" text-anchor="middle">Full-000-100-T0</text>
+            </g>
+          </g>
+          <defs>
+            <marker id="ah7g" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--green)"/></marker>
+            <marker id="ah7r" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--green)"/></marker>
+            <marker id="ah7red" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--accent)"/></marker>
+          </defs>
+        </svg>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:20px">
+          <span class="chip" id="s7c1" data-step="1">1. healthy</span>
+          <span class="chip" id="s7c2" data-step="2">2. PVC corrupts</span>
+          <span class="chip" id="s7c3" data-step="3">3. etcd unhealthy</span>
+          <span class="chip" id="s7c4" data-step="4">4. b-r validates, finds corruption</span>
+          <span class="chip" id="s7c5" data-step="5">5. pull latest full</span>
+          <span class="chip" id="s7c6" data-step="6">6. healthy again</span>
+        </div>
+      </div>
+      <div>
+        <p class="lead" data-step="7"><strong>The gap:</strong> everything written after the last full snapshot is gone.</p>
+        <p class="lead muted" data-step="7" style="margin-top:14px">Taking fulls more often costs storage and loads etcd, hurting performance.</p>
+        <p class="mono" data-step="7" style="margin-top:18px;color:var(--accent);font-size:var(--t16)">There has to be a cheaper way to cut the loss.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 8 : DELTA SNAPSHOTS ============ (recreates image.png)
+       Speaker notes: A full snapshot is the whole DB. A delta captures just the
+       changes since the last full, taken on a short period (deltaSnapshotPeriod,
+       default seconds). Recovery = latest full + replay all deltas after it =
+       exact state, in seconds. Worst-case loss is bounded by the delta period,
+       not a full day. And because we now take many small objects, the bucket
+       grows fast, so garbage collection (Exponential or LimitBased) keeps only
+       what recovery needs. -->
+  <section class="slide" id="s8">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">Delta snapshots</p>
+      <hr class="rule-accent" style="margin:20px 0 18px">
+      <h2>Full is the baseline. <span class="accent">Deltas</span> are the changes since.</h2>
+    </div>
+    <div class="head-block" style="margin-top:24px">
+      <svg viewBox="0 0 1180 250" width="100%" style="display:block;max-width:100%" role="img" aria-label="Timeline: a full snapshot T0 as baseline followed by six delta snapshots T01 to T06, then a second full snapshot T1 followed by three deltas T11 to T13, flowing left to right over time">
+        <!-- timeline baseline with a time arrow -->
+        <line x1="40" y1="120" x2="1130" y2="120" stroke="var(--hair)" stroke-width="1.5" marker-end="url(#ah8t)"/>
+        <text x="1120" y="152" text-anchor="end" font-family="var(--mono)" font-size="13" fill="var(--secondary)">time</text>
+
+        <!-- FULL baseline pillar T0 (greys out once T1 supersedes it) -->
+        <g class="s8full1" font-family="var(--mono)">
+          <rect id="s8f1rect" x="48" y="64" width="82" height="58" rx="3" fill="var(--green)"/>
+          <text x="89" y="99" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">FULL</text>
+          <text id="s8f1lbl" x="89" y="150" text-anchor="middle" font-size="13" font-weight="700" fill="var(--green)">T0</text>
+        </g>
+        <!-- 6 uniform deltas T01..T06 (grey out with T0) -->
+        <g class="s8deltas" font-family="var(--mono)">
+          <g><rect class="s8d1r" x="176" y="80" width="30" height="30" rx="4" fill="var(--cobalt)"/><text class="s8d1t" x="191" y="150" text-anchor="middle" font-size="12" fill="var(--cobalt)">T01</text></g>
+          <g><rect class="s8d1r" x="248" y="80" width="30" height="30" rx="4" fill="var(--cobalt)"/><text class="s8d1t" x="263" y="150" text-anchor="middle" font-size="12" fill="var(--cobalt)">T02</text></g>
+          <g><rect class="s8d1r" x="320" y="80" width="30" height="30" rx="4" fill="var(--cobalt)"/><text class="s8d1t" x="335" y="150" text-anchor="middle" font-size="12" fill="var(--cobalt)">T03</text></g>
+          <g><rect class="s8d1r" x="392" y="80" width="30" height="30" rx="4" fill="var(--cobalt)"/><text class="s8d1t" x="407" y="150" text-anchor="middle" font-size="12" fill="var(--cobalt)">T04</text></g>
+          <g><rect class="s8d1r" x="464" y="80" width="30" height="30" rx="4" fill="var(--cobalt)"/><text class="s8d1t" x="479" y="150" text-anchor="middle" font-size="12" fill="var(--cobalt)">T05</text></g>
+          <g><rect class="s8d1r" x="536" y="80" width="30" height="30" rx="4" fill="var(--cobalt)"/><text class="s8d1t" x="551" y="150" text-anchor="middle" font-size="12" fill="var(--cobalt)">T06</text></g>
+        </g>
+
+        <!-- SLA retention note over the superseded T0 range -->
+        <text id="s8sla" x="300" y="176" text-anchor="middle" font-family="var(--mono)" font-size="12" fill="#a8a8a2" opacity="0">retained for SLA, not active</text>
+
+        <!-- second FULL T1 -->
+        <g class="s8full2" opacity="0" font-family="var(--mono)">
+          <rect x="612" y="64" width="82" height="58" rx="3" fill="var(--green)"/>
+          <text x="653" y="99" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">FULL</text>
+          <text x="653" y="150" text-anchor="middle" font-size="13" font-weight="700" fill="var(--green)">T1</text>
+        </g>
+        <!-- 3 uniform deltas T11..T13 -->
+        <g class="s8deltas2" opacity="0" font-family="var(--mono)">
+          <g><rect x="740" y="80" width="30" height="30" rx="4" fill="var(--cobalt)"/><text x="755" y="150" text-anchor="middle" font-size="12" fill="var(--cobalt)">T11</text></g>
+          <g><rect x="812" y="80" width="30" height="30" rx="4" fill="var(--cobalt)"/><text x="827" y="150" text-anchor="middle" font-size="12" fill="var(--cobalt)">T12</text></g>
+          <g><rect x="884" y="80" width="30" height="30" rx="4" fill="var(--cobalt)"/><text x="899" y="150" text-anchor="middle" font-size="12" fill="var(--cobalt)">T13</text></g>
+        </g>
+
+        <!-- legend, bottom-right -->
+        <g font-family="var(--mono)" font-size="13">
+          <rect x="792" y="186" width="20" height="20" rx="3" fill="var(--green)"/>
+          <text x="822" y="201" fill="var(--secondary)">Full: complete DB snapshot</text>
+          <rect x="792" y="214" width="20" height="20" rx="3" fill="var(--cobalt)"/>
+          <text x="822" y="229" fill="var(--secondary)">Delta: changes since last snapshot</text>
+        </g>
+
+        <defs><marker id="ah8t" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--secondary)"/></marker></defs>
+      </svg>
+    </div>
+    <div class="head-block" data-step="2" style="margin-top:26px;border:1px solid var(--green);background:#fff;padding:20px 24px;display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap">
+      <span class="mono" style="color:var(--green);font-size:clamp(16px,1.8vw,23px);font-weight:700">RECOVERY :</span>
+      <span class="mono" style="font-size:clamp(16px,1.8vw,23px);font-weight:700">latest <span style="color:var(--green)">FULL</span> + replay all <span style="color:var(--cobalt)">deltas</span> after it</span>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 9 : DELTA RESTORATION ============
+       Speaker notes: same failure as before, but now the store holds a full plus
+       all the deltas taken since. On restore, backup-restore pulls the latest
+       full AND every delta after it, and replays them, so the recovery point is
+       seconds of data, not a day. GC cue: because we now keep many small objects,
+       the bucket grows fast, so garbage-collection policies (Exponential or
+       LimitBased) prune what recovery no longer needs. -->
+  <section class="slide" id="s8b">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">Restoration&nbsp;&nbsp;/&nbsp;&nbsp;with deltas</p>
+      <hr class="rule-accent" style="margin:20px 0 20px">
+      <h2>Latest full <span class="accent">plus every delta since</span>. Minutes of loss, not a day.</h2>
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:1.3fr .7fr;gap:clamp(28px,5vw,56px);align-items:center;margin-top:6px">
+      <div>
+        <svg viewBox="0 0 820 320" width="100%" style="display:block;max-width:100%" role="img" aria-label="A pod runs etcd and a backup-restore sidecar with an external PVC; the PVC corrupts, etcd goes unhealthy, backup-restore validates the data directory and detects corruption, then pulls the latest full snapshot and all deltas after it from the object store, and etcd becomes healthy again">
+          <g font-family="var(--mono)" font-size="14">
+            <!-- pod with two well-spaced containers -->
+            <rect x="20" y="44" width="300" height="140" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+            <text x="170" y="66" text-anchor="middle" fill="var(--secondary)" font-size="12">POD</text>
+            <polygon id="s9retcd" points="52,100 77,86 102,100 102,128 77,142 52,128" fill="var(--green-soft)" stroke="var(--green)"/>
+            <circle id="s9retcddot" cx="77" cy="114" r="6" fill="var(--green)"/>
+            <text id="s9retcdlbl" x="77" y="164" text-anchor="middle" fill="var(--green)" font-size="13">etcd</text>
+            <rect x="212" y="88" width="92" height="52" rx="3" fill="#fff" stroke="var(--green)"/>
+            <text x="258" y="110" text-anchor="middle" fill="var(--ink)" font-size="11">backup-</text>
+            <text x="258" y="126" text-anchor="middle" fill="var(--ink)" font-size="11">restore</text>
+
+            <!-- validate arrow: b-r -> etcd, revealed on the validation step -->
+            <g id="s9rvalidate" opacity="0">
+              <line x1="212" y1="114" x2="106" y2="114" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah9rred)"/>
+              <text x="159" y="104" text-anchor="middle" font-size="11" fill="var(--accent)">validate</text>
+            </g>
+
+            <!-- PVC outside the pod, linked to etcd -->
+            <line x1="77" y1="142" x2="77" y2="222" stroke="var(--hair)" stroke-width="1.5"/>
+            <rect id="s9rpvc" x="40" y="222" width="74" height="44" rx="3" fill="#fff" stroke="var(--hair)"/>
+            <text id="s9rpvclbl" x="77" y="248" text-anchor="middle" fill="var(--secondary)" font-size="12">PVC</text>
+
+            <!-- restore arrow: straight from store to backup-restore center (revealed on restore step) -->
+            <line id="s9rrestore" x1="572" y1="114" x2="308" y2="114" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah9r)" opacity="0"/>
+            <!-- backup arrow: b-r -> store (baseline) -->
+            <line id="s9rbackup" x1="304" y1="114" x2="570" y2="114" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah9rg)"/>
+
+            <!-- object store: full at bottom, deltas above (newest on top) -->
+            <rect x="576" y="44" width="228" height="196" rx="3" fill="var(--green-soft)" stroke="var(--green)"/>
+            <text x="690" y="68" text-anchor="middle" fill="var(--green)">object store</text>
+            <g font-size="12">
+              <rect id="s9rd3" x="596" y="82"  width="188" height="22" fill="#fff" stroke="var(--cobalt)"/><text x="690" y="97"  text-anchor="middle" fill="var(--cobalt)">Incr-176-210-T3</text>
+              <rect id="s9rd2" x="596" y="110" width="188" height="22" fill="#fff" stroke="var(--cobalt)"/><text x="690" y="125" text-anchor="middle" fill="var(--cobalt)">Incr-141-175-T2</text>
+              <rect id="s9rd1" x="596" y="138" width="188" height="22" fill="#fff" stroke="var(--cobalt)"/><text x="690" y="153" text-anchor="middle" fill="var(--cobalt)">Incr-101-140-T1</text>
+              <rect id="s9rfull" x="596" y="166" width="188" height="24" fill="#fff" stroke="var(--green)" stroke-width="2"/><text x="690" y="182" text-anchor="middle" fill="var(--green)">Full-000-100-T0</text>
+            </g>
+            <text x="690" y="216" text-anchor="middle" fill="var(--secondary)" font-size="10">newest on top</text>
+          </g>
+          <defs>
+            <marker id="ah9rg" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--green)"/></marker>
+            <marker id="ah9r" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--green)"/></marker>
+            <marker id="ah9rred" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--accent)"/></marker>
+          </defs>
+        </svg>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:20px">
+          <span class="chip" id="s9rc1" data-step="1">1. healthy</span>
+          <span class="chip" id="s9rc2" data-step="2">2. PVC corrupts</span>
+          <span class="chip" id="s9rc3" data-step="3">3. etcd unhealthy</span>
+          <span class="chip" id="s9rc4" data-step="4">4. b-r validates, finds corruption</span>
+          <span class="chip" id="s9rc5" data-step="5">5. pull full + all deltas</span>
+          <span class="chip" id="s9rc6" data-step="6">6. healthy again</span>
+        </div>
+      </div>
+      <div>
+        <p class="lead" data-step="7"><strong>The win:</strong> restore replays the latest full and every delta after it, cutting the loss to the delta interval.</p>
+        <p class="lead muted" data-step="7" style="margin-top:14px">More small objects means the bucket grows fast, so garbage collection prunes what recovery no longer needs.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 10 : SCHEDULED DEFRAGMENTATION (SKIPPED for time; kept for future) ============
+       Disabled by wrapping in <template> so the engine's .slide query ignores it.
+       To re-enable: remove the <template ...> wrapper open/close tags below, and
+       uncomment the s9 slide hook in the script (search "s9 hook — disabled").
+       (recreates image-1.png)
+       Speaker notes: etcd stores data in bbolt. Deleting keys leaves holes,
+       that is fragmentation. A fragmented db keeps growing against its quota and
+       etcd can trip a read-only alarm, freezing the cluster. The fix: run defrag
+       on a schedule (defragmentationSchedule cron), one member at a time, and in
+       HA always a non-leader first, so quorum is never at risk. Defrag reclaims
+       the free pages and compacts the file. -->
+  <template id="s9-skipped">
+  <section class="slide" id="s9">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">Scheduled defragmentation</p>
+      <hr class="rule-accent" style="margin:20px 0 20px">
+      <h2>Deletes/Updates leave <span class="accent">holes</span>. Defrag reclaims the space.</h2>
+    </div>
+    <div class="head-block" data-step="1" style="margin-top:14px">
+      <svg viewBox="0 0 1120 210" width="100%" role="img" aria-label="A fragmented bbolt file with used and free pages compacts into a solid file with reclaimed space after defrag">
+        <!-- FRAGMENTED -->
+        <text x="60" y="46" font-family="var(--mono)" font-size="15" letter-spacing="2" fill="var(--secondary)">FRAGMENTED</text>
+        <rect x="60" y="66" width="392" height="82" rx="6" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <g>
+          <rect x="78" y="84" width="52" height="46" rx="6" fill="var(--cobalt)"/>
+          <rect x="140" y="84" width="52" height="46" rx="6" fill="var(--soft-red)"/>
+          <rect x="202" y="84" width="52" height="46" rx="6" fill="var(--cobalt)"/>
+          <rect x="264" y="84" width="52" height="46" rx="6" fill="var(--soft-red)"/>
+          <rect x="326" y="84" width="52" height="46" rx="6" fill="var(--cobalt)"/>
+          <rect x="388" y="84" width="52" height="46" rx="6" fill="var(--soft-red)"/>
+        </g>
+        <!-- legend -->
+        <g font-family="var(--mono)" font-size="11" fill="var(--secondary)">
+          <rect x="60" y="162" width="12" height="12" fill="var(--cobalt)"/><text x="80" y="172">used pages</text>
+          <rect x="170" y="162" width="12" height="12" fill="var(--soft-red)"/><text x="190" y="172">free pages (holes)</text>
+        </g>
+
+        <!-- defrag arrow -->
+        <g class="s9arrow">
+          <line x1="500" y1="107" x2="600" y2="107" stroke="var(--green)" stroke-width="2" marker-end="url(#ah9g)"/>
+          <text x="550" y="140" text-anchor="middle" font-family="var(--mono)" font-size="14" fill="var(--green)">defrag</text>
+        </g>
+
+        <!-- COMPACTED: same colours as the left; 50% used (cobalt), 50% reclaimed (free) -->
+        <g class="s9comp" opacity="0">
+          <text x="660" y="46" font-family="var(--mono)" font-size="15" letter-spacing="2" fill="var(--green)" text-anchor="start">COMPACTED</text>
+          <rect x="660" y="66" width="392" height="82" rx="6" fill="none" stroke="var(--green)" stroke-width="1.5"/>
+          <rect x="676" y="84" width="181" height="46" rx="6" fill="var(--cobalt)"/>
+          <text x="766" y="112" text-anchor="middle" font-family="var(--mono)" font-size="11" fill="#fff">used</text>
+          <rect x="857" y="84" width="181" height="46" rx="6" fill="var(--green-soft)"/>
+          <text x="947" y="112" text-anchor="middle" font-family="var(--mono)" font-size="11" fill="var(--green)">reclaimed</text>
+        </g>
+        <defs><marker id="ah9g" markerWidth="9" markerHeight="9" refX="6" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--green)"/></marker></defs>
+      </svg>
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:1fr 1fr;gap:var(--gutter);margin-top:16px">
+      <p class="lead" data-step="3"><strong>The risk:</strong> a fragmented db grows against its quota and etcd can trip a read-only alarm, freezing the cluster.</p>
+      <p class="lead muted" data-step="4">The operator runs defrag on a cron, one member at a time, <span class="accent">non-leader first</span>, so quorum is never at risk.</p>
+    </div>
+  </section>
+  </template>
+
+  <!-- ============ SLIDE 10 : HELM EXITS ============
+       Speaker notes: We were provisioning with Helm. Helm is great at creating
+       resources and then exiting. It does not watch, reconcile, or heal. At tens
+       of thousands of clusters we needed something that observes, reconciles,
+       heals, and repeats. That is an operator. -->
+  <section class="slide" id="s10">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">The turning point</p>
+      <hr class="rule-accent" style="margin:14px 0 18px">
+      <h2 style="font-size:clamp(30px,4.2vw,54px)">Everything looked good. <span class="accent">So what was the problem?</span></h2>
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(36px,6vw,80px);align-items:stretch;margin-top:clamp(20px,4vh,44px)">
+      <!-- step anchors so engine knows maxStep=3 -->
+      <span data-step="1" style="display:none"></span>
+      <span data-step="2" style="display:none"></span>
+      <span data-step="3" style="display:none"></span>
+      <!-- LEFT: helm fire-and-forget, everything centred in column -->
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center">
+        <svg viewBox="0 0 400 130" width="100%" style="display:block;max-width:520px" role="img" aria-label="Helm installs resources then exits and stops watching them">
+          <defs><marker id="ah10k" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--ink)"/></marker></defs>
+          <g font-family="var(--mono)" font-size="16">
+            <rect id="s10helm" x="30" y="37" width="100" height="56" rx="5" fill="#fff" stroke="var(--hair)" stroke-width="1.5"/>
+            <text id="s10helmlbl" x="80" y="70" text-anchor="middle" fill="var(--secondary)">helm</text>
+            <line id="s10ha" x1="130" y1="65" x2="198" y2="65" stroke="var(--ink)" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#ah10k)" opacity="0"/>
+            <text id="s10hal" x="164" y="52" text-anchor="middle" font-size="12" fill="var(--secondary)" opacity="0">install</text>
+            <g id="s10res" opacity="0">
+              <rect x="200" y="22" width="168" height="86" rx="5" fill="#fbfbfb" stroke="var(--secondary)" stroke-dasharray="5 3" stroke-width="1.5"/>
+              <text x="284" y="58" text-anchor="middle" fill="var(--ink)">etcd resources</text>
+              <text x="284" y="80" text-anchor="middle" font-size="12" fill="var(--secondary)">sts · svc · config</text>
+            </g>
+          </g>
+        </svg>
+        <p id="s10exit" style="font-family:var(--mono);font-size:clamp(13px,1.3vw,17px);color:var(--accent);margin-top:14px;text-align:center;opacity:0">exits. stops watching.</p>
+        <p id="s10moat" style="margin-top:clamp(14px,2vh,24px);font-size:clamp(16px,1.8vw,22px);text-align:center;max-width:34ch;opacity:0">Great at <strong>provisioning</strong>. But it does not watch, reconcile, or heal.<br><span class="accent" style="font-weight:700">Managing is the real moat.</span></p>
+      </div>
+      <!-- RIGHT: operator control loop — hidden until step 3, centred in column -->
+      <div id="s10right" style="display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:0">
+        <p class="kicker" style="margin-bottom:16px;text-align:center">What actually needs</p>
+        <svg viewBox="0 0 360 320" width="100%" style="display:block;max-width:400px" role="img" aria-label="Operator control loop: observe, reconcile, heal, repeat">
+          <g font-family="var(--mono)">
+            <rect class="s10stagebox" x="10" y="10" width="340" height="300" rx="8" fill="none" stroke="var(--hair)" stroke-dasharray="5 4" opacity="0"/>
+            <circle class="s10ring" cx="180" cy="160" r="110" fill="none" stroke="var(--cobalt)" stroke-width="3" stroke-dasharray="14 18" stroke-linecap="round"/>
+            <g class="s10stage" opacity="0"><text x="180" y="36"  text-anchor="middle" font-size="20" font-weight="700" fill="var(--ink)">observe</text></g>
+            <g class="s10stage" opacity="0"><text x="304" y="165" text-anchor="middle" font-size="20" font-weight="700" fill="var(--ink)">reconcile</text></g>
+            <g class="s10stage" opacity="0"><text x="180" y="292" text-anchor="middle" font-size="20" font-weight="700" fill="var(--ink)">heal</text></g>
+            <g class="s10stage" opacity="0"><text x="56"  y="165" text-anchor="middle" font-size="20" font-weight="700" fill="var(--accent)">repeat</text></g>
+            <text x="180" y="152" text-anchor="middle" font-size="14" fill="var(--secondary)">control</text>
+            <text x="180" y="172" text-anchor="middle" font-size="14" fill="var(--secondary)">loop</text>
+          </g>
+        </svg>
+        <p style="font-size:clamp(16px,1.7vw,21px);margin-top:16px;text-align:center">That loop has a name: an <strong>operator</strong>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 11 : WHAT GARDENER NEEDED ============
+       Speaker notes: We needed a declarative, Kubernetes-native way to describe
+       an etcd cluster: provision it, self-heal to keep actual state in sync with
+       desired, monitor health, and, crucially, an operator that understands
+       quorum-based workloads and can orchestrate upgrades and scale-outs safely.
+       That is etcd-druid. -->
+  <section class="slide" id="s11">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">What Gardener needed</p>
+      <hr class="rule-accent" style="margin:20px 0 24px">
+      <h2 style="font-size:clamp(38px,5.2vw,72px)">A Kubernetes-native operator for <span class="accent">etcd</span>.</h2>
+    </div>
+    <div class="head-block" style="margin-top:clamp(22px,4vh,44px);display:grid;grid-template-columns:1fr 1fr;column-gap:clamp(36px,6vw,80px)">
+      <div class="s4list">
+        <div class="s4item" data-step="1"><div class="s4t">Provisioning</div><div class="s4s">declare the cluster, get the cluster</div></div>
+        <div class="s4item" data-step="3"><div class="s4t">Status monitoring</div><div class="s4s">health of the cluster and its environment</div></div>
+      </div>
+      <div class="s4list">
+        <div class="s4item" data-step="2"><div class="s4t">Self-healing</div><div class="s4s">keep actual state in sync with desired</div></div>
+        <div class="s4item" data-step="4"><div class="s4t">Quorum-aware orchestration</div><div class="s4s">upgrades and scale-outs without losing quorum</div></div>
+      </div>
+    </div>
+    <p class="head-block mono" data-step="5" style="margin-top:clamp(24px,4.5vh,44px);font-size:clamp(30px,4vw,54px);font-weight:700">That is <span class="accent">etcd-druid</span>.</p>
+  </section>
+
+  <!-- ============ SLIDE 12 : ETCD-DRUID RECONCILE ============ (recreates image-2.png)
+       Speaker notes: gardenlet writes an Etcd resource into the seed. etcd-druid
+       reconciles it: from that one desired-state object it creates the client and
+       peer services, a ConfigMap, member and snapshot leases, a PDB, RBAC, and
+       the StatefulSet. The pod runs etcd (via etcd-wrapper) plus the
+       backup-restore sidecar, which streams full and delta snapshots to the
+       object store. Declare once; druid keeps it true. -->
+  <section class="slide" id="s12">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">etcd-druid&nbsp;&nbsp;/&nbsp;&nbsp;the reconcile</p>
+      <hr class="rule-accent" style="margin:18px 0 16px">
+      <h3>One <span class="accent">Etcd</span> resource in. A running, backed-up cluster out.</h3>
+    </div>
+    <div class="head-block" style="margin-top:10px">
+      <svg viewBox="0 0 1260 340" width="100%" role="img" aria-label="etcd-druid reconciles the Etcd resource into services, configmap, lease, statefulset, a pod with etcd and backup-restore, backing up to an object store">
+        <!-- desired state card -->
+        <g font-family="var(--mono)" font-size="12">
+          <rect x="10" y="96" width="150" height="150" rx="4" fill="var(--cobalt-soft)" stroke="var(--cobalt)"/>
+          <text x="26" y="122" font-weight="700" fill="var(--cobalt)">kind: Etcd</text>
+          <line x1="26" y1="132" x2="144" y2="132" stroke="var(--cobalt)" opacity=".4"/>
+          <text x="26" y="154" fill="var(--secondary)">spec:</text>
+          <text x="38" y="172" fill="var(--ink)">replicas: <tspan fill="var(--accent)">3</tspan></text>
+          <text x="38" y="190" fill="var(--ink)">backup:</text>
+          <text x="50" y="208" fill="var(--ink)">store:</text>
+          <text x="62" y="226" fill="var(--ink)">provider: <tspan fill="var(--green)">s3</tspan></text>
+        </g>
+        <text x="20" y="86" font-family="var(--mono)" font-size="11" letter-spacing="1.5" fill="var(--secondary)">DESIRED STATE</text>
+
+        <!-- druid reconcile circle -->
+        <line x1="162" y1="171" x2="212" y2="171" stroke="var(--cobalt)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ah12b)"/>
+        <circle cx="268" cy="171" r="52" fill="#fff" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="6 5"/>
+        <!-- live rotating blue ring: signals continuous reconciliation -->
+        <circle class="s12ring" cx="268" cy="171" r="60" fill="none" stroke="var(--cobalt)" stroke-width="2" stroke-dasharray="10 12" stroke-linecap="round"/>
+        <text x="268" y="166" text-anchor="middle" font-family="var(--mono)" font-size="13" font-weight="700">etcd-</text>
+        <text x="268" y="184" text-anchor="middle" font-family="var(--mono)" font-size="13" font-weight="700">druid</text>
+        <text x="268" y="108" text-anchor="middle" font-family="var(--mono)" font-size="11" fill="var(--secondary)">RECONCILES -&gt; CREATES</text>
+
+        <!-- fanned components: two up, two down, leaving a middle gap for the StatefulSet arrow -->
+        <g class="s12comp" font-family="var(--mono)" font-size="12" opacity="0">
+          <g><line x1="316" y1="150" x2="384" y2="62" stroke="var(--cobalt)" stroke-width="1.3" marker-end="url(#ah12b)"/>
+             <rect x="386" y="38" width="150" height="40" rx="4" fill="#fff" stroke="var(--cobalt)"/>
+             <text x="398" y="56" font-weight="700">client Service</text><text x="398" y="70" fill="var(--secondary)" font-size="10">ClusterIP . :2379</text></g>
+          <g><line x1="320" y1="158" x2="384" y2="112" stroke="var(--cobalt)" stroke-width="1.3" marker-end="url(#ah12b)"/>
+             <rect x="386" y="90" width="150" height="40" rx="4" fill="#fff" stroke="var(--cobalt)"/>
+             <text x="398" y="108" font-weight="700">peer Service</text><text x="398" y="122" fill="var(--secondary)" font-size="10">headless . :2380</text></g>
+          <g><line x1="320" y1="184" x2="384" y2="230" stroke="var(--cobalt)" stroke-width="1.3" marker-end="url(#ah12b)"/>
+             <rect x="386" y="212" width="150" height="40" rx="4" fill="#fff" stroke="var(--cobalt)"/>
+             <text x="398" y="230" font-weight="700">ConfigMap</text><text x="398" y="244" fill="var(--secondary)" font-size="10">etcd.conf.yaml</text></g>
+          <g><line x1="316" y1="192" x2="384" y2="280" stroke="var(--cobalt)" stroke-width="1.3" marker-end="url(#ah12b)"/>
+             <rect x="386" y="264" width="150" height="40" rx="4" fill="#fff" stroke="var(--cobalt)"/>
+             <text x="398" y="282" font-weight="700">Lease + PDB + RBAC</text><text x="398" y="296" fill="var(--secondary)" font-size="10">member . snapshot</text></g>
+        </g>
+
+        <!-- statefulset: reached by a horizontal arrow from druid through the middle gap; sits above the pod -->
+        <g class="s12sts" opacity="0" font-family="var(--mono)" font-size="12">
+          <line x1="320" y1="171" x2="686" y2="171" stroke="var(--cobalt)" stroke-width="1.5" marker-end="url(#ah12b)"/>
+          <rect x="688" y="148" width="130" height="46" rx="4" fill="#fff" stroke="var(--ink)"/>
+          <text x="753" y="170" text-anchor="middle" font-weight="700">StatefulSet</text>
+          <text x="753" y="185" text-anchor="middle" fill="var(--secondary)" font-size="10">1 / 1 ready</text>
+          <!-- arrow from StatefulSet down into the pod -->
+          <line x1="753" y1="194" x2="753" y2="222" stroke="var(--ink)" stroke-width="1.5" marker-end="url(#ah12k)"/>
+        </g>
+
+        <!-- pod: centered under the StatefulSet, clear of the resource boxes -->
+        <g class="s12pod" opacity="0" font-family="var(--mono)" font-size="12">
+          <rect x="638" y="224" width="230" height="104" rx="4" fill="#fbfbfb" stroke="var(--cobalt)" stroke-dasharray="4 3"/>
+          <text x="650" y="244" fill="var(--secondary)">POD . etcd-main-0</text>
+          <polygon points="686,268 710,254 734,268 734,296 710,310 686,296" fill="var(--green-soft)" stroke="var(--green)"/>
+          <circle cx="710" cy="282" r="6" fill="var(--green)"/>
+          <text x="710" y="322" text-anchor="middle" fill="var(--green)">etcd</text>
+          <rect x="754" y="256" width="96" height="52" rx="3" fill="#fff" stroke="var(--green)"/>
+          <text x="802" y="278" text-anchor="middle" font-size="11">backup-</text>
+          <text x="802" y="292" text-anchor="middle" font-size="11">restore</text>
+          <line x1="734" y1="282" x2="754" y2="282" stroke="var(--green)" stroke-width="1.5" marker-end="url(#ah12g)"/>
+        </g>
+
+        <!-- object store: to the right of the pod -->
+        <g class="s12store" opacity="0" font-family="var(--mono)" font-size="12">
+          <line x1="868" y1="282" x2="938" y2="282" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah12g)"/>
+          <rect x="940" y="176" width="266" height="152" rx="4" fill="var(--green-soft)" stroke="var(--green)"/>
+          <text x="1073" y="202" text-anchor="middle" fill="var(--green)" font-weight="700">object store</text>
+          <text x="1073" y="218" text-anchor="middle" fill="var(--secondary)" font-size="10">s3://etcd-backups/</text>
+          <g font-size="10" fill="var(--secondary)">
+            <rect x="956" y="228" width="234" height="20" fill="#fff" stroke="var(--cobalt)"/><text x="1073" y="242" text-anchor="middle" fill="var(--cobalt)">Incr-151-190-T2</text>
+            <rect x="956" y="254" width="234" height="20" fill="#fff" stroke="var(--cobalt)"/><text x="1073" y="268" text-anchor="middle" fill="var(--cobalt)">Incr-101-150-T1</text>
+            <rect x="956" y="280" width="234" height="20" fill="#fff" stroke="var(--green)"/><text x="1073" y="294" text-anchor="middle" fill="var(--green)">Full-000-100-T0</text>
+          </g>
+        </g>
+
+        <defs>
+          <marker id="ah12b" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--cobalt)"/></marker>
+          <marker id="ah12g" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--green)"/></marker>
+          <marker id="ah12k" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--ink)"/></marker>
+        </defs>
+      </svg>
+    </div>
+    <div class="head-block" style="margin-top:6px;display:flex;gap:10px;flex-wrap:wrap">
+      <span class="chip" data-step="1">services + configmap + leases + RBAC</span>
+      <span class="chip" data-step="2">StatefulSet</span>
+      <span class="chip" data-step="3">pod: etcd + backup-restore</span>
+      <span class="chip" data-step="4">full daily + deltas to object store</span>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 13 : SINGLE-MEMBER PAIN ============
+       Speaker notes: We ran single-member etcd happily for a while: simple, and
+       fast because there is no peer round-trip in a strongly-consistent store.
+       But as we grew: PVC attachment errors caused downtime, maintenance like
+       defrag and upgrades required restarting the one member (downtime), and node
+       updates and zone outages took the single member down. The cons outgrew the
+       pros. Moving to HA was a no-brainer. -->
+  <section class="slide" id="s13">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">The single member</p>
+      <hr class="rule-accent" style="margin:20px 0 22px">
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:.9fr 1.1fr;gap:clamp(32px,5vw,72px);align-items:center">
+      <div class="s13meme" data-step="1">
+        <img src="../images/memes/s14-ralph-in-danger.jpg" alt="single member enjoying the disaster it causes">
+      </div>
+      <div>
+        <h2 data-step="2" style="font-size:clamp(30px,4vw,52px);margin-bottom:8px">Simple and fast, until it <span class="accent">wasn't</span>.</h2>
+        <div class="s4list">
+          <div class="s4item" data-step="3"><div class="s4t">PVC attachment errors</div><div class="s4s">recoverable, but downtime</div></div>
+          <div class="s4item" data-step="4"><div class="s4t">Maintenance restarts the only member</div><div class="s4s">defragmentation, upgrades mean downtime</div></div>
+          <div class="s4item" data-step="5"><div class="s4t">Node updates, zone outages</div><div class="s4s">one member, one point of failure</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 14 : HA SUPPORT (learner scale-out) ============
+       Speaker notes: HA solved the single-member pain but opened its own class of
+       problems: what if a member's volume corrupts, or the leader changes mid
+       defrag/upgrade/snapshot, and how to scale out safely. We solved all of it
+       with quorum awareness. Scale-out 1 to 3: druid enables peer TLS, then the
+       backup-restore sidecar adds each new member as a LEARNER (initial-cluster-
+       state=existing). A learner replicates the log but does not vote, so quorum
+       is never at risk. Once caught up, it is promoted to a voting member. If a
+       member's data is unrecoverable, it is removed and re-added the same way. -->
+  <section class="slide" id="s14">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">HA support</p>
+      <hr class="rule-accent" style="margin:12px 0 10px">
+      <h2 id="s14title" style="font-size:clamp(28px,3.8vw,48px)">What HA had to <span class="accent">handle</span>.</h2>
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:.82fr 1.18fr;gap:clamp(32px,5vw,64px);align-items:center;margin-top:clamp(8px,1.5vh,16px)">
+      <!-- left: the list, revealed at step 1 -->
+      <div data-step="1">
+        <ul id="s14list" style="list-style:none">
+          <li class="s14item" data-k="scale"><span class="s14t">Scale-out via learner mechanism</span><span class="s14s">non-voting until caught up</span></li>
+          <li class="s14item" data-k="pvc"><span class="s14t">PVC corruption of a member</span><span class="s14s">remove, re-add as learner, sync from leader, promote</span></li>
+          <li class="s14item" data-k="maint"><span class="s14t">Quorum-aware maintenance</span><span class="s14s">leading backup-restore orchestrates, one member at a time</span></li>
+        </ul>
+      </div>
+      <!-- right: swappable diagrams -->
+      <div id="s14dgWrap" style="opacity:0">
+        <!-- SCALE-OUT: steps 2-5 -->
+        <div class="s14dg" id="s14dgScale">
+          <p class="kicker" style="margin-bottom:12px">Scale out 1 to 3, one member at a time</p>
+          <svg viewBox="0 0 560 260" width="100%" style="display:block;max-width:100%">
+            <g font-family="var(--mono)" font-size="11">
+              <!-- etcd-0 leader pod (left) -->
+              <rect x="26" y="96" width="150" height="68" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+              <polygon points="52,116 71,105 90,116 90,138 71,149 52,138" fill="var(--green-soft)" stroke="var(--green)"/>
+              <circle cx="71" cy="127" r="4" fill="var(--green)"/>
+              <rect x="104" y="112" width="60" height="30" rx="2" fill="#fff" stroke="var(--green)"/>
+              <text x="134" y="131" text-anchor="middle" font-size="8" fill="var(--ink)">b-r</text>
+              <text x="101" y="180" text-anchor="middle" font-weight="700" fill="var(--green)">etcd-0</text>
+              <text x="101" y="194" text-anchor="middle" font-size="9" fill="var(--green)">leader</text>
+
+              <!-- etcd-1 joining (top-right) -->
+              <g class="s14m1learn" opacity="0">
+                <line x1="176" y1="118" x2="316" y2="70" stroke="var(--cobalt)" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#ah14b)"/>
+                <g class="s14lbl"><rect x="205" y="80" width="76" height="15" rx="2" fill="var(--paper)"/><text x="243" y="91" text-anchor="middle" font-size="9" fill="var(--cobalt)">log replication</text></g>
+                <rect x="330" y="30" width="150" height="68" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+                <polygon points="356,50 375,39 394,50 394,72 375,83 356,72" fill="#fff" stroke="var(--cobalt)" stroke-dasharray="4 3"/>
+                <circle cx="375" cy="61" r="4" fill="var(--cobalt)"/>
+                <rect x="408" y="46" width="60" height="30" rx="2" fill="#fff" stroke="var(--cobalt)"/>
+                <text x="438" y="65" text-anchor="middle" font-size="8" fill="var(--ink)">b-r</text>
+                <text x="405" y="114" text-anchor="middle" font-weight="700" fill="var(--cobalt)">etcd-1</text>
+                <text x="405" y="128" text-anchor="middle" font-size="9" fill="var(--cobalt)">learner</text>
+              </g>
+              <g class="s14m1vote" opacity="0">
+                <line x1="176" y1="118" x2="326" y2="66" stroke="var(--green)" stroke-width="1.3" marker-end="url(#ah14g)"/>
+                <rect x="330" y="30" width="150" height="68" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+                <polygon points="356,50 375,39 394,50 394,72 375,83 356,72" fill="var(--green-soft)" stroke="var(--green)"/>
+                <circle cx="375" cy="61" r="4" fill="var(--green)"/>
+                <rect x="408" y="46" width="60" height="30" rx="2" fill="#fff" stroke="var(--green)"/>
+                <text x="438" y="65" text-anchor="middle" font-size="8" fill="var(--ink)">b-r</text>
+                <text x="405" y="114" text-anchor="middle" font-weight="700" fill="var(--green)">etcd-1</text>
+                <text x="405" y="128" text-anchor="middle" font-size="9" fill="var(--green)">follower</text>
+              </g>
+
+              <!-- etcd-2 joining (bottom-right) -->
+              <g class="s14m2learn" opacity="0">
+                <line x1="176" y1="142" x2="316" y2="190" stroke="var(--cobalt)" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#ah14b)"/>
+                <g class="s14lbl"><rect x="205" y="166" width="76" height="15" rx="2" fill="var(--paper)"/><text x="243" y="177" text-anchor="middle" font-size="9" fill="var(--cobalt)">log replication</text></g>
+                <rect x="330" y="162" width="150" height="68" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+                <polygon points="356,182 375,171 394,182 394,204 375,215 356,204" fill="#fff" stroke="var(--cobalt)" stroke-dasharray="4 3"/>
+                <circle cx="375" cy="193" r="4" fill="var(--cobalt)"/>
+                <rect x="408" y="178" width="60" height="30" rx="2" fill="#fff" stroke="var(--cobalt)"/>
+                <text x="438" y="197" text-anchor="middle" font-size="8" fill="var(--ink)">b-r</text>
+                <text x="405" y="246" text-anchor="middle" font-weight="700" fill="var(--cobalt)">etcd-2</text>
+                <text x="405" y="260" text-anchor="middle" font-size="9" fill="var(--cobalt)">learner</text>
+              </g>
+              <g class="s14m2vote" opacity="0">
+                <line x1="176" y1="142" x2="326" y2="192" stroke="var(--green)" stroke-width="1.3" marker-end="url(#ah14g)"/>
+                <rect x="330" y="162" width="150" height="68" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+                <polygon points="356,182 375,171 394,182 394,204 375,215 356,204" fill="var(--green-soft)" stroke="var(--green)"/>
+                <circle cx="375" cy="193" r="4" fill="var(--green)"/>
+                <rect x="408" y="178" width="60" height="30" rx="2" fill="#fff" stroke="var(--green)"/>
+                <text x="438" y="197" text-anchor="middle" font-size="8" fill="var(--ink)">b-r</text>
+                <text x="405" y="246" text-anchor="middle" font-weight="700" fill="var(--green)">etcd-2</text>
+                <text x="405" y="260" text-anchor="middle" font-size="9" fill="var(--green)">follower</text>
+              </g>
+              <g class="s14quorum" opacity="0">
+                <text x="101" y="228" text-anchor="middle" font-size="14" font-weight="700" fill="var(--green)">quorum: 3/3</text>
+                <text x="101" y="246" text-anchor="middle" font-size="10" fill="var(--secondary)">tolerates 1 failure</text>
+              </g>
+            </g>
+          </svg>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
+            <span class="chip" id="s14c1">learner joins</span>
+            <span class="chip ok" id="s14c2">syncs, becomes follower</span>
+            <span class="chip ok" id="s14c3">healthy 3-member</span>
+          </div>
+        </div>
+
+        <!-- PVC CORRUPTION: steps 6-10
+             Layout: etcd-0 (leader, left), etcd-1 (top-right), etcd-2 (bottom-right)
+             PVC sits fully inside the viewBox below etcd-2.
+             Resync arrow: leader only → etcd-2 (Raft: only leader replicates to learner).
+             New step 9: promote learner → follower. -->
+        <div class="s14dg" id="s14dgPvc" style="display:none">
+          <p class="kicker" style="margin-bottom:12px">A member's volume corrupts, then rejoins</p>
+          <svg viewBox="0 0 560 300" width="100%" style="display:block;max-width:100%">
+            <g font-family="var(--mono)" font-size="11">
+              <!-- etcd-0 leader pod (left): etcd hexagon and b-r spaced apart -->
+              <rect x="14" y="112" width="176" height="66" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+              <polygon points="34,131 53,120 72,131 72,153 53,164 34,153" fill="var(--green-soft)" stroke="var(--green)"/>
+              <circle cx="53" cy="142" r="4" fill="var(--green)"/>
+              <rect x="116" y="127" width="60" height="30" rx="2" fill="#fff" stroke="var(--green)"/>
+              <text x="146" y="146" text-anchor="middle" font-size="8" fill="var(--ink)">b-r</text>
+              <text x="53" y="186" text-anchor="middle" font-weight="700" fill="var(--green)">etcd-0</text>
+              <text x="53" y="199" text-anchor="middle" font-size="9" fill="var(--green)">leader</text>
+
+              <!-- etcd-1 follower pod (top-right, always healthy) -->
+              <rect x="330" y="30" width="176" height="60" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+              <polygon points="350,48 368,38 386,48 386,68 368,78 350,68" fill="var(--green-soft)" stroke="var(--green)"/>
+              <circle cx="368" cy="58" r="4" fill="var(--green)"/>
+              <rect x="432" y="44" width="60" height="30" rx="2" fill="#fff" stroke="var(--green)"/>
+              <text x="462" y="63" text-anchor="middle" font-size="8" fill="var(--ink)">b-r</text>
+              <text x="418" y="105" text-anchor="middle" font-weight="700" fill="var(--green)">etcd-1</text>
+
+              <!-- etcd-2 pod (bottom-right): wider, etcd and b-r spaced so the b-r->etcd arrow is long -->
+              <rect id="s14ppod" x="330" y="150" width="176" height="60" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+              <polygon id="s14pmem" points="350,168 368,158 386,168 386,188 368,198 350,188" fill="var(--green-soft)" stroke="var(--green)"/>
+              <circle id="s14pmemdot" cx="368" cy="178" r="4" fill="var(--green)"/>
+              <rect x="432" y="164" width="60" height="30" rx="2" fill="#fff" stroke="var(--green)"/>
+              <text x="462" y="183" text-anchor="middle" font-size="8" fill="var(--ink)">b-r</text>
+              <text id="s14pmemlbl" x="418" y="225" text-anchor="middle" font-weight="700" fill="var(--green)">etcd-2</text>
+              <text id="s14pmemsub" x="418" y="239" text-anchor="middle" font-size="9" fill="var(--green)" opacity="0">learner</text>
+              <!-- PVC box below etcd-2's pod -->
+              <line x1="368" y1="198" x2="368" y2="256" stroke="var(--hair)" stroke-width="1.5"/>
+              <rect id="s14ppvc" x="334" y="256" width="68" height="26" rx="3" fill="#fff" stroke="var(--hair)"/>
+              <text id="s14ppvclbl" x="368" y="273" text-anchor="middle" font-size="10" fill="var(--secondary)">PVC</text>
+
+              <!-- step 7: co-located b-r detects the corruption (red arrow b-r -> its own etcd) -->
+              <g id="s14pbr" opacity="0">
+                <line x1="430" y1="178" x2="390" y2="178" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ah14r)"/>
+              </g>
+              <!-- step 8: same b-r re-adds the member as a learner (blue arrow b-r -> its own etcd) -->
+              <g id="s14paddlearner" opacity="0">
+                <line x1="430" y1="178" x2="390" y2="178" stroke="var(--cobalt)" stroke-width="1.5" marker-end="url(#ah14b)"/>
+              </g>
+              <!-- step 9: log replication from leader's etcd outer edge to etcd-2's etcd outer edge (routed below etcd-0's pod, clear of both b-r boxes) -->
+              <g id="s14presync" opacity="0">
+                <path d="M70,155 C120,225 260,232 348,180" fill="none" stroke="var(--cobalt)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ah14bs)"/>
+                <g class="s14lbl"><rect x="170" y="222" width="76" height="15" rx="2" fill="var(--paper)"/><text x="208" y="233" text-anchor="middle" font-size="9" fill="var(--cobalt)">log replication</text></g>
+              </g>
+              <!-- step 10: co-located b-r promotes the learner to a voting follower (green arrow b-r -> its own etcd) -->
+              <g id="s14ppromote" opacity="0">
+                <line x1="430" y1="178" x2="390" y2="178" stroke="var(--green)" stroke-width="1.5" marker-end="url(#ah14g)"/>
+              </g>
+            </g>
+          </svg>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+            <span class="chip hot" id="s14pc1">PVC corrupts</span>
+            <span class="chip hot" id="s14pc2">its b-r detects</span>
+            <span class="chip" id="s14pc3">re-adds as learner</span>
+            <span class="chip" id="s14pc4">log replication from leader</span>
+            <span class="chip ok" id="s14pc5">its b-r promotes to follower</span>
+          </div>
+        </div>
+
+        <!-- QUORUM-AWARE MAINTENANCE (snapshot leadership handoff): steps 11-15
+             Scenario: snapshots are always taken by the LEADING backup-restore
+             (the b-r co-located with the etcd leader). If the leader dies
+             mid-snapshot, a new leader is elected and ITS b-r becomes the
+             leading b-r and continues snapshotting.
+             Layout: 3 members stacked left, each with its own b-r box to its
+             right; an object store cylinder on the far right. -->
+        <div class="s14dg" id="s14dgMaint" style="display:none">
+          <p class="kicker" id="s14mkick" style="margin-bottom:12px">Snapshots always run on the leading backup-restore</p>
+          <svg viewBox="0 0 560 300" width="100%" style="display:block;max-width:100%">
+            <g font-family="var(--mono)" font-size="11">
+              <!-- object store (far right) -->
+              <g id="s14mstore">
+                <ellipse cx="500" cy="120" rx="34" ry="10" fill="var(--green-soft)" stroke="var(--green)" stroke-width="1.3"/>
+                <path d="M466,120 V180 A34,10 0 0 0 534,180 V120" fill="var(--green-soft)" stroke="var(--green)" stroke-width="1.3"/>
+                <ellipse cx="500" cy="120" rx="34" ry="10" fill="var(--green-soft)" stroke="var(--green)" stroke-width="1.3"/>
+                <text x="500" y="205" text-anchor="middle" font-size="10" fill="var(--secondary)">object store</text>
+              </g>
+
+              <!-- leader ring: subtle green dotted outline hugging the current leader's pod (clear of the labels below) -->
+              <rect id="s14mring0" x="10" y="26" width="200" height="56" rx="4" fill="none" stroke="var(--green)" stroke-width="1.2" stroke-dasharray="3 4" opacity=".7"/>
+              <rect id="s14mring1" x="10" y="116" width="200" height="56" rx="4" fill="none" stroke="var(--green)" stroke-width="1.2" stroke-dasharray="3 4" opacity="0"/>
+
+              <!-- ===== etcd-0 pod (row 1) ===== -->
+              <rect id="s14m0" x="14" y="30" width="192" height="48" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+              <polygon id="s14m0etcd" points="34,42 50,33 66,42 66,62 50,71 34,62" fill="var(--green-soft)" stroke="var(--green)"/>
+              <circle cx="50" cy="52" r="4" fill="var(--green)"/>
+              <text id="s14m0lbl" x="50" y="90" text-anchor="middle" font-weight="700" font-size="10" fill="var(--green)">etcd-0</text>
+              <rect id="s14m0br" x="92" y="40" width="104" height="26" rx="3" fill="#fff" stroke="var(--green)"/>
+              <text id="s14m0brlbl" x="144" y="57" text-anchor="middle" font-size="9" fill="var(--ink)">backup-restore</text>
+              <text id="s14m0role" x="144" y="90" text-anchor="middle" font-size="9" fill="var(--green)">leader</text>
+
+              <!-- ===== etcd-1 pod (row 2) ===== -->
+              <rect id="s14m1" x="14" y="120" width="192" height="48" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+              <polygon id="s14m1etcd" points="34,132 50,123 66,132 66,152 50,161 34,152" fill="var(--green-soft)" stroke="var(--green)"/>
+              <circle cx="50" cy="142" r="4" fill="var(--green)"/>
+              <text id="s14m1lbl" x="50" y="180" text-anchor="middle" font-weight="700" font-size="10" fill="var(--green)">etcd-1</text>
+              <rect id="s14m1br" x="92" y="130" width="104" height="26" rx="3" fill="#fff" stroke="var(--green)"/>
+              <text id="s14m1brlbl" x="144" y="147" text-anchor="middle" font-size="9" fill="var(--ink)">backup-restore</text>
+              <text id="s14m1role" x="144" y="180" text-anchor="middle" font-size="9" fill="var(--green)">follower</text>
+
+              <!-- ===== etcd-2 pod (row 3) ===== -->
+              <rect id="s14m2" x="14" y="210" width="192" height="48" rx="3" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+              <polygon id="s14m2etcd" points="34,222 50,213 66,222 66,242 50,251 34,242" fill="var(--green-soft)" stroke="var(--green)"/>
+              <circle cx="50" cy="232" r="4" fill="var(--green)"/>
+              <text id="s14m2lbl" x="50" y="270" text-anchor="middle" font-weight="700" font-size="10" fill="var(--green)">etcd-2</text>
+              <rect id="s14m2br" x="92" y="220" width="104" height="26" rx="3" fill="#fff" stroke="var(--green)"/>
+              <text id="s14m2brlbl" x="144" y="237" text-anchor="middle" font-size="9" fill="var(--ink)">backup-restore</text>
+              <text id="s14m2role" x="144" y="270" text-anchor="middle" font-size="9" fill="var(--green)">follower</text>
+
+              <!-- snapshot arrow from etcd-0's b-r -> store (leading, active) -->
+              <g id="s14msnap0" opacity="0">
+                <path d="M206,53 C320,54 360,110 464,126" fill="none" stroke="var(--green)" stroke-width="1.5" marker-end="url(#ah14g)"/>
+                <g class="s14lbl"><rect x="300" y="66" width="58" height="15" rx="2" fill="var(--paper)"/><text x="329" y="77" text-anchor="middle" font-size="9" fill="var(--green)">snapshot</text></g>
+              </g>
+              <!-- interrupted marker on etcd-0's snapshot -->
+              <g id="s14msnapx" opacity="0">
+                <text x="340" y="100" text-anchor="middle" font-size="14" fill="var(--accent)" font-weight="700">✕</text>
+                <g class="s14lbl"><rect x="300" y="104" width="80" height="15" rx="2" fill="var(--paper)"/><text x="340" y="115" text-anchor="middle" font-size="9" fill="var(--accent)">interrupted</text></g>
+              </g>
+              <!-- leader election marker -->
+              <g id="s14melect" opacity="0">
+                <g class="s14lbl"><rect x="240" y="140" width="120" height="16" rx="2" fill="var(--paper)"/><text x="300" y="152" text-anchor="middle" font-size="10" fill="var(--cobalt)" font-weight="700">leader election…</text></g>
+              </g>
+              <!-- snapshot arrow from etcd-1's b-r -> store (new leading, continues) -->
+              <g id="s14msnap1" opacity="0">
+                <path d="M206,143 C320,144 372,138 464,138" fill="none" stroke="var(--green)" stroke-width="1.5" marker-end="url(#ah14g)"/>
+                <g class="s14lbl"><rect x="296" y="120" width="86" height="15" rx="2" fill="var(--paper)"/><text x="339" y="131" text-anchor="middle" font-size="9" fill="var(--green)">snapshot resumes</text></g>
+              </g>
+            </g>
+          </svg>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+            <span class="chip ok" id="s14mc1">leading b-r snapshots</span>
+            <span class="chip hot" id="s14mc2">leader dies mid-snapshot</span>
+            <span class="chip cobalt" id="s14mc3">leader election</span>
+            <span class="chip" id="s14mc4">new leader elected</span>
+            <span class="chip ok" id="s14mc5">its b-r continues</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <svg width="0" height="0" style="position:absolute"><defs>
+      <marker id="ah14b" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--cobalt)"/></marker>
+      <marker id="ah14g" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--green)"/></marker>
+      <marker id="ah14r" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--accent)"/></marker>
+      <marker id="ah14bs" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="var(--cobalt)"/></marker>
+    </defs></svg>
+    <!-- step anchors: 1=list, 2-5=scale, 6-10=pvc, 11-15=maint -->
+    <span data-step="2" style="display:none"></span><span data-step="3" style="display:none"></span><span data-step="4" style="display:none"></span><span data-step="5" style="display:none"></span><span data-step="6" style="display:none"></span><span data-step="7" style="display:none"></span><span data-step="8" style="display:none"></span><span data-step="9" style="display:none"></span><span data-step="10" style="display:none"></span><span data-step="11" style="display:none"></span><span data-step="12" style="display:none"></span><span data-step="13" style="display:none"></span><span data-step="14" style="display:none"></span><span data-step="15" style="display:none"></span>
+  </section>
+
+  <!-- ============ SLIDE 16 : ETCD CR WALKTHROUGH ============
+       Speaker notes: This is the whole API surface in one object. Step through
+       the sections: replicas sets cluster size (odd, HA when 3). storage is the
+       data volume. etcd holds the DB quota, metrics level, and the defrag
+       schedule. backup.store points at any cloud object store. the snapshot
+       policy sets full schedule, delta period, and garbage collection. Declare
+       it once; druid keeps it true. -->
+  <section class="slide" id="s16">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in" style="margin-bottom:8px;margin-top:clamp(40px,6vh,72px)">
+      <p class="kicker">The Etcd resource&nbsp;&nbsp;/&nbsp;&nbsp;section by section</p>
+      <hr class="rule-accent" style="margin:16px 0 0">
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:.62fr 1.38fr;gap:clamp(24px,4vw,52px);align-items:start">
+      <!-- left: section list -->
+      <ul id="crlist" style="list-style:none;margin-top:8px">
+        <li class="critem" data-sec="meta" data-step="0"><span class="cn">metadata</span><span class="cd">name, namespace</span></li>
+        <li class="critem" data-sec="replicas" data-step="1"><span class="cn">replicas</span><span class="cd">cluster size, odd for HA</span></li>
+        <li class="critem" data-sec="storage" data-step="2"><span class="cn">storage</span><span class="cd">data volume capacity</span></li>
+        <li class="critem" data-sec="etcd" data-step="3"><span class="cn">etcd</span><span class="cd">quota, metrics, defrag schedule</span></li>
+        <li class="critem" data-sec="store" data-step="4"><span class="cn">backup.store</span><span class="cd">any cloud object store</span></li>
+        <li class="critem" data-sec="policy" data-step="5"><span class="cn">snapshot policy</span><span class="cd">full, delta, garbage collection</span></li>
+      </ul>
+      <!-- right: yaml with highlightable regions -->
+      <div>
+        <p class="codecap kicker" style="margin-bottom:8px">etcd-main.yaml</p>
+<pre class="code" id="cryaml" style="border-left:1px solid var(--hair);font-size:clamp(12px,1.15vw,16px);line-height:1.5"><span class="key">apiVersion:</span> <span class="val">druid.gardener.cloud/v1alpha1</span>
+<span class="key">kind:</span> <span class="val">Etcd</span>
+<span class="crseg" data-seg="meta"><span class="key">metadata:</span>
+  <span class="key">name:</span> <span class="val">etcd-main</span>
+  <span class="key">namespace:</span> <span class="val">shoot--proj--a</span></span>
+<span class="key">spec:</span>
+<span class="crseg" data-seg="replicas">  <span class="key">replicas:</span> <span class="num">3</span></span>
+<span class="crseg" data-seg="storage">  <span class="key">storage:</span>
+    <span class="key">capacity:</span> <span class="val">10Gi</span></span>
+<span class="crseg" data-seg="etcd">  <span class="key">etcd:</span>
+    <span class="key">quota:</span> <span class="val">8Gi</span>
+    <span class="key">metrics:</span> <span class="val">basic</span>
+    <span class="key">defragmentationSchedule:</span> <span class="str">"0 */3 * * *"</span></span>
+  <span class="key">backup:</span>
+<span class="crseg" data-seg="store">    <span class="key">store:</span>
+      <span class="key">provider:</span> <span class="str">aws</span>
+      <span class="key">container:</span> <span class="val">gardener-etcd-backups</span>
+      <span class="key">prefix:</span> <span class="val">etcd-main</span></span>
+<span class="crseg" data-seg="policy">    <span class="key">fullSnapshotSchedule:</span> <span class="str">"0 */24 * * *"</span>
+    <span class="key">deltaSnapshotPeriod:</span> <span class="val">5m</span>
+    <span class="key">garbageCollectionPolicy:</span> <span class="val">Exponential</span></span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 16b : LIVE DEMO ============
+       Speaker notes: Enough slides — let's watch it work. We apply one Etcd
+       manifest, watch druid stand up an HA cluster, then kill a member and
+       watch backup-restore re-add it as a learner and heal the cluster live. -->
+  <section class="slide" id="s16b">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">Live demo</p>
+      <hr class="rule-accent" style="margin:20px 0 26px">
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:1.15fr .85fr;gap:clamp(36px,6vw,84px);align-items:center;margin-top:clamp(10px,2vh,28px)">
+      <h2 style="font-size:clamp(40px,5.6vw,78px);line-height:1.05">Enough slides. <span class="accent">Let's see if it works.</span></h2>
+      <div class="s13meme" style="max-width:440px;justify-self:center">
+        <img src="../images/memes/demo-opt4-fry-suspicious.jpg" alt="not sure if it self-heals or the presenter fixed it off-screen">
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 17 : ROADMAP ============
+       Speaker notes: What is next. Quorum-aware updates (alpha feature gate
+       today) so pod rollouts never break quorum. Volume resizing. And a TUI to
+       operate etcd clusters from the terminal. -->
+  <section class="slide" id="s17">
+    <div class="grid-overlay"></div>
+    <div class="head-block" style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(36px,6vw,88px);align-items:center">
+      <div class="slide-in">
+        <p class="kicker">Roadmap</p>
+        <hr class="rule-accent" style="margin:20px 0 24px">
+        <h2 style="font-size:clamp(40px,5.6vw,76px)">Where this is <span class="accent">going</span>.</h2>
+      </div>
+      <div class="s4list">
+        <div class="s4item" data-step="1"><div class="s4t">Quorum-aware updates</div><div class="s4s">rolling pod updates that never break quorum</div></div>
+        <div class="s4item" data-step="2"><div class="s4t">Volume resizing</div><div class="s4s">grow data volumes without downtime</div></div>
+        <div class="s4item" data-step="3"><div class="s4t">TUI for etcd clusters</div><div class="s4s">operate clusters from the terminal</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 18 : ADOPTERS ============
+       Speaker notes: This is not a lab project. It runs in production at SAP
+       Gardener and is adopted by Akamai Cloud, StackIT, and Scaleway, with an
+       active maintainer community under the NeoNephos Foundation. -->
+  <section class="slide" id="s18">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">In production</p>
+      <hr class="rule-accent" style="margin:20px 0 26px">
+      <h2>Running where it matters. <span class="accent">Adopted</span> in production.</h2>
+    </div>
+    <div class="head-block s18grid" data-step="1">
+      <div class="s18cell">
+        <div class="s18tray"><img class="s18-sap" src="../images/logos/SAP.svg" alt="SAP"></div>
+        <div class="s18name">SAP Gardener</div>
+        <div class="s18sub">tens of thousands of clusters</div>
+      </div>
+      <div class="s18cell">
+        <div class="s18tray"><img class="s18-akamai" src="../images/logos/akamai-transparent.svg" alt="Akamai"></div>
+        <div class="s18name">Akamai Cloud</div>
+      </div>
+      <div class="s18cell">
+        <div class="s18tray"><img class="s18-stackit" src="../images/logos/stackIT.jpeg" alt="StackIT"></div>
+        <div class="s18name">StackIT</div>
+      </div>
+      <div class="s18cell">
+        <div class="s18tray"><img class="s18-scaleway" src="../images/logos/scaleway.svg" alt="Scaleway"></div>
+        <div class="s18name">Scaleway</div>
+      </div>
+    </div>
+    <div class="head-block s18gov" data-step="2">
+      <img src="../images/logos/neonephos-foundation-horizontal-color.svg" alt="NeoNephos Foundation">
+      <div class="s18sep"></div>
+      <img src="../images/logos/linux-foundation-eu.png" alt="Linux Foundation Europe">
+      <div class="s18sep"></div>
+      <p class="s18govtxt">Governed by the <span class="nn-neo">Neo</span><span class="nn-nephos">Nephos</span> Foundation under the Linux Foundation Europe, with an active maintainer community.</p>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 19 : GETTING STARTED / MIGRATION ============
+       Speaker notes: If you want to try it, it is a single Etcd manifest away.
+       And if you already run etcd outside druid, you do not start from scratch:
+       bootstrapWithExistingCluster lets druid bring up members alongside your
+       existing cluster, then you remove the old members. Zero-downtime migration
+       into a druid-managed cluster. -->
+  <section class="slide" id="s19">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">Getting started</p>
+      <hr class="rule-accent" style="margin:20px 0 22px">
+      <h2>One manifest to start. A <span class="accent">safe path</span> to migrate.</h2>
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(28px,5vw,56px);margin-top:12px;align-items:center">
+      <div data-step="1">
+        <p class="kicker" style="margin-bottom:10px">New cluster</p>
+        <p class="lead">Install etcd-druid, apply one Etcd resource, and you have a backed-up HA cluster. The same manifest works on any supported cloud.</p>
+        <p class="mono" style="margin-top:14px;font-size:var(--t16)">$ kubectl apply -f etcd-main.yaml</p>
+      </div>
+      <div data-step="2">
+        <p class="kicker" style="margin-bottom:10px">Already running etcd?</p>
+        <p class="lead">Use <span class="mono accent">bootstrapWithExistingCluster</span>: druid brings up members alongside your existing cluster, you remove the old members, and you are now druid-managed.</p>
+        <p class="muted" style="margin-top:12px;font-size:var(--t14)">Migrate with zero downtime.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 19b : MIGRATE AN EXISTING CLUSTER ============
+       Speaker notes: If you already run etcd outside druid, you do not rebuild.
+       You declare your live cluster's members under spec.etcd.bootstrapWithExistingCluster.
+       Druid stands up a target member that joins the running cluster over the peer
+       protocol (:2380) and syncs directly from a live peer: no snapshot restore,
+       no downtime. Once it is in sync, you drain and remove the old source members;
+       the BootstrappedWithExistingCluster condition flips to True and you are now
+       fully druid-managed: self-healing, backups, defrag, HA. -->
+  <section class="slide" id="s19b">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">Adopt etcd-druid&nbsp;&nbsp;/&nbsp;&nbsp;migrate an existing cluster</p>
+      <hr class="rule-accent" style="margin:18px 0 16px">
+      <h3>Already running etcd? <span class="accent">Bring it under druid</span>, with zero downtime.</h3>
+      <p class="lead muted" style="margin-top:12px;font-size:var(--t16);max-width:76ch">Declare your live members in <span class="mono">spec.etcd.bootstrapWithExistingCluster</span>. The druid-created member joins the running cluster over the peer protocol and syncs. No snapshot restore, no downtime.</p>
+    </div>
+    <div class="head-block" style="margin-top:14px">
+      <svg viewBox="0 0 1260 340" width="100%" role="img" aria-label="An existing self-managed etcd cluster is adopted by etcd-druid: a target member joins over the peer protocol, then the old source members are removed">
+        <g font-family="var(--mono)" font-size="12">
+          <!-- existing live cluster (neutral, like the pod card on s12) -->
+          <text x="10" y="30" font-size="11" letter-spacing="1.5" fill="var(--secondary)">EXISTING CLUSTER . LIVE</text>
+          <rect x="10" y="42" width="238" height="150" rx="4" fill="#fbfbfb" stroke="var(--hair)" stroke-dasharray="4 3"/>
+          <text x="26" y="66" font-size="10" fill="var(--secondary)">self-managed . no CR</text>
+          <polygon points="60,92 86,78 112,92 112,124 86,138 60,124" fill="var(--green-soft)" stroke="var(--green)"/>
+          <circle cx="86" cy="108" r="5" fill="var(--green)"/><text x="86" y="160" text-anchor="middle" fill="var(--green)" font-weight="700">src-0</text>
+          <polygon points="146,92 172,78 198,92 198,124 172,138 146,124" fill="var(--green-soft)" stroke="var(--green)"/>
+          <circle cx="172" cy="108" r="5" fill="var(--green)"/><text x="172" y="160" text-anchor="middle" fill="var(--green)" font-weight="700">src-1</text>
+          <text x="129" y="182" text-anchor="middle" font-size="10" fill="var(--secondary)">still serving reads &amp; writes</text>
+
+          <!-- 1 . etcdctl member list callout -->
+          <g class="s19c1" opacity="0">
+            <text x="10" y="238" font-size="11" letter-spacing="1.5" fill="var(--secondary)">1 . LIST MEMBERS</text>
+            <rect x="10" y="250" width="238" height="52" rx="4" fill="#fff" stroke="var(--hair)"/>
+            <text x="26" y="272" font-size="11"><tspan fill="var(--secondary)">$</tspan> etcdctl member list</text>
+            <text x="26" y="290" font-size="10" fill="var(--secondary)">src-0, src-1 . peerURL :2380</text>
+          </g>
+
+          <!-- 2 . target Etcd CR (cobalt, matches s12 DESIRED STATE) -->
+          <g class="s19c2" opacity="0">
+            <text x="316" y="30" font-size="11" letter-spacing="1.5" fill="var(--secondary)">2 . APPLY ETCD CR</text>
+            <rect x="316" y="42" width="240" height="204" rx="4" fill="var(--cobalt-soft)" stroke="var(--cobalt)"/>
+            <text x="332" y="68" font-weight="700" fill="var(--cobalt)">kind: Etcd</text>
+            <line x1="332" y1="78" x2="540" y2="78" stroke="var(--cobalt)" opacity=".4"/>
+            <text x="332" y="100" fill="var(--secondary)">spec:</text>
+            <text x="344" y="118" fill="var(--ink)">replicas: <tspan fill="var(--accent)">3</tspan></text>
+            <text x="344" y="136" fill="var(--ink)">etcd:</text>
+            <text x="356" y="154" fill="var(--cobalt)" font-weight="700">bootstrapWith-</text>
+            <text x="356" y="170" fill="var(--cobalt)" font-weight="700">ExistingCluster:</text>
+            <text x="368" y="190" fill="var(--ink)">sourceMembers:</text>
+            <text x="368" y="208" fill="var(--ink)">sourcePeerURLs:</text>
+            <text x="368" y="226" fill="var(--ink)">sourceEndpoints:</text>
+          </g>
+
+          <!-- 3 . druid reconcile circle (same idiom as s12) -->
+          <g class="s19c3" opacity="0">
+            <line x1="556" y1="140" x2="606" y2="140" stroke="var(--cobalt)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ah19b)"/>
+            <text x="660" y="76" text-anchor="middle" font-size="11" letter-spacing="1.5" fill="var(--secondary)">3 . RECONCILES</text>
+            <circle cx="660" cy="140" r="46" fill="#fff" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="6 5"/>
+            <circle class="s19ring" cx="660" cy="140" r="54" fill="none" stroke="var(--cobalt)" stroke-width="2" stroke-dasharray="10 12" stroke-linecap="round"/>
+            <text x="660" y="136" text-anchor="middle" font-size="12" font-weight="700">etcd-</text>
+            <text x="660" y="152" text-anchor="middle" font-size="12" font-weight="700">druid</text>
+          </g>
+
+          <!-- 4 . target pod joining (cobalt = transitional, matches s14 learner) -->
+          <g class="s19c4" opacity="0">
+            <line x1="706" y1="140" x2="778" y2="140" stroke="var(--cobalt)" stroke-width="1.5" marker-end="url(#ah19b)"/>
+            <text x="792" y="76" font-size="11" letter-spacing="1.5" fill="var(--secondary)">STATEFULSET -&gt; POD . target</text>
+            <rect x="792" y="88" width="330" height="104" rx="4" fill="#fbfbfb" stroke="var(--cobalt)" stroke-dasharray="4 3"/>
+            <polygon points="828,122 856,107 884,122 884,152 856,167 828,152" fill="#fff" stroke="var(--cobalt)" stroke-dasharray="4 3"/>
+            <circle cx="856" cy="137" r="5" fill="var(--cobalt)"/>
+            <text x="856" y="183" text-anchor="middle" font-size="10" fill="var(--cobalt)" font-weight="700">joining</text>
+            <rect x="936" y="114" width="158" height="52" rx="4" fill="#fff" stroke="var(--green)"/>
+            <text x="1015" y="137" text-anchor="middle" font-size="11" fill="var(--green)" font-weight="700">backup-restore</text>
+            <text x="1015" y="153" text-anchor="middle" font-size="10" fill="var(--secondary)">now managed</text>
+            <line x1="884" y1="137" x2="936" y2="137" stroke="var(--green)" stroke-width="1.5" marker-end="url(#ah19g)"/>
+            <!-- peer join arrow: existing cluster (bottom) to target member, routed under the boxes -->
+            <path d="M129,192 C240,300 690,300 856,169" fill="none" stroke="var(--green)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ah19g)"/>
+            <g><rect x="446" y="270" width="340" height="18" fill="var(--paper)"/><text x="616" y="284" text-anchor="middle" font-size="11" fill="var(--green)" font-weight="700">4 . joins the live cluster over peer protocol :2380</text></g>
+          </g>
+
+        </g>
+        <defs>
+          <marker id="ah19b" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--cobalt)"/></marker>
+          <marker id="ah19g" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--green)"/></marker>
+        </defs>
+      </svg>
+    </div>
+    <div class="head-block" style="margin-top:6px;display:flex;gap:10px;flex-wrap:wrap">
+      <span class="chip" data-step="1">list source members</span>
+      <span class="chip" data-step="2">apply Etcd CR with bootstrap</span>
+      <span class="chip" data-step="3">druid reconciles</span>
+      <span class="chip" data-step="4">target joins over peer protocol</span>
+      <span class="chip ok" data-step="5">remove old members, fully managed</span>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 20 : COMMUNICATION CHANNELS ============
+       Speaker notes: It is open source and the community is active. The repos are
+       on GitHub; contribute via Discussions, Issues, and PRs. Find us in the
+       community calls, on Slack, YouTube, and X. Scan the QR to jump straight in. -->
+  <section class="slide" id="s20">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in">
+      <p class="kicker">Get in touch</p>
+      <hr class="rule-accent" style="margin:20px 0 24px">
+      <h2 style="font-size:clamp(38px,5.2vw,72px)">Open source, <span class="accent">active community</span>.</h2>
+    </div>
+    <div class="head-block" style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(36px,6vw,80px);margin-top:clamp(20px,4vh,40px);align-items:start">
+      <div>
+        <p class="kicker" style="margin-bottom:14px">Repositories</p>
+        <div class="s4list" data-step="1">
+          <div class="s4item"><div class="s4t mono" style="font-weight:600">github.com/gardener/etcd-druid</div></div>
+          <div class="s4item"><div class="s4t mono" style="font-weight:600">github.com/gardener/etcd-backup-restore</div></div>
+          <div class="s4item"><div class="s4t mono" style="font-weight:600">github.com/gardener/etcd-wrapper</div></div>
+        </div>
+        <p class="kicker" data-step="2" style="margin:clamp(20px,3vh,30px) 0 12px">Contribute</p>
+        <div data-step="2" style="display:flex;gap:9px;flex-wrap:wrap">
+          <span class="chip">Discussions</span><span class="chip">Issues</span><span class="chip">PRs</span>
+        </div>
+      </div>
+      <div data-step="3">
+        <p class="kicker" style="margin-bottom:12px">Channels</p>
+        <div style="display:flex;gap:9px;flex-wrap:wrap">
+          <span class="chip">Community calls</span><span class="chip">Slack</span><span class="chip">GitHub</span><span class="chip">YouTube</span><span class="chip">X</span>
+        </div>
+        <p class="kicker" style="margin:clamp(20px,3vh,30px) 0 12px">Scan to explore</p>
+        <div class="s20qr">
+          <div class="s20qrcard">
+            <img src="../images/qr-codes/Gardener-website.svg" alt="Gardener website QR">
+            <span class="s20qrlbl">Gardener</span>
+          </div>
+          <div class="s20qrcard">
+            <img src="../images/qr-codes/etcd-druid.svg" alt="etcd-druid repo QR">
+            <span class="s20qrlbl">etcd-druid</span>
+          </div>
+          <div class="s20qrcard">
+            <img src="../images/qr-codes/etcd-backup-restore.svg" alt="etcd-backup-restore repo QR">
+            <span class="s20qrlbl">etcd-backup-restore</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 20b : Q&A ============
+       Speaker notes: Before we wrap up — questions. Ask us anything about druid,
+       backup-restore, the HA orchestration, or running etcd at scale. -->
+  <section class="slide title-slide" id="s20b">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in" style="text-align:center">
+      <p class="kicker">Over to you</p>
+      <hr class="rule-accent" style="margin:22px auto 30px;width:96px">
+      <h1 style="font-size:clamp(72px,12vw,180px);letter-spacing:-.03em;margin:0 auto">Q<span class="accent">&amp;</span>A</h1>
+      <p class="mono" style="margin-top:clamp(24px,4vh,44px);font-size:clamp(16px,1.8vw,22px);font-weight:600">Ask us anything <span class="muted">— etcd-druid, backup-restore, HA.</span></p>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 21 : CLOSING ============
+       Speaker notes: That is how we run tens of thousands of etcd clusters with
+       zero recorded data loss. In Kubernetes, for Kubernetes, truly self-healing.
+       Come find us after the talk. Thank you. -->
+  <section class="slide title-slide" id="s21">
+    <div class="grid-overlay"></div>
+    <div class="head-block slide-in" style="text-align:center">
+      <p class="kicker">Thank you</p>
+      <hr class="rule-accent" style="margin:22px auto 30px;width:96px">
+      <h1 style="font-size:clamp(44px,6.6vw,96px);max-width:20ch;margin:0 auto">In Kubernetes, for Kubernetes, and truly <span class="accent">self-healing</span>.</h1>
+      <p class="mono" style="margin-top:clamp(28px,5vh,52px);font-size:clamp(16px,1.8vw,22px);font-weight:600">Come find us. <span class="muted">Contributions welcome.</span></p>
+    </div>
+  </section>
+
+</div>
+
+<div class="chrome">
+  <div class="deck-header">
+    <img src="../images/logos/gardener.png" alt="Gardener">
+    <span class="hdr-sep"></span>
+    <img src="../images/logos/neonephos-foundation-horizontal-color.svg" alt="NeoNephos Foundation">
+  </div>
+  <div class="counter"><b id="cur">01</b> / <span id="tot">00</span></div>
+  <div class="navzone prev" data-dir="-1" aria-label="Previous"></div>
+  <div class="navzone next" data-dir="1" aria-label="Next"></div>
+  <div class="arrows">
+    <button id="btnPrev" aria-label="Previous">&larr;</button>
+    <button id="btnNext" aria-label="Next">&rarr;</button>
+  </div>
+  <div class="progress"><div class="fill" id="fill"></div></div>
+</div>
+
+<script>
+(function(){
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var total  = slides.length;
+  var idx = 0, step = 0;
+  var curEl = document.getElementById('cur');
+  var totEl = document.getElementById('tot');
+  var fill  = document.getElementById('fill');
+  var pad = function(n){ return (n<10?'0':'')+n; };
+  totEl.textContent = pad(total);
+
+  // build 12-span grid overlays
+  Array.prototype.forEach.call(document.querySelectorAll('.grid-overlay'), function(ov){
+    for(var i=0;i<12;i++){ ov.appendChild(document.createElement('span')); }
+  });
+
+  function steps(slide){
+    return Array.prototype.slice.call(slide.querySelectorAll('[data-step]'))
+      .sort(function(a,b){ return (+a.dataset.step) - (+b.dataset.step); });
+  }
+  function maxStep(slide){
+    var s = steps(slide); return s.length ? (+s[s.length-1].dataset.step) : 0;
+  }
+  function applySteps(slide, upTo){
+    steps(slide).forEach(function(el){
+      var on = (+el.dataset.step) <= upTo;
+      el.classList.toggle('on', on);
+      if(el.dataset.onstep && on){ // fire a named animation hook once
+        el.setAttribute('data-fired','1');
+      }
+    });
+    // notify slide-local scripts of the current step
+    if(slide.__onstep){ try{ slide.__onstep(upTo); }catch(e){} }
+  }
+
+  function show(n, atStep){
+    idx = Math.max(0, Math.min(total-1, n));
+    slides.forEach(function(s,i){ s.classList.toggle('is-active', i===idx); });
+    document.body.classList.toggle('on-title', slides[idx].classList.contains('title-slide'));
+    document.body.classList.toggle('on-logo-tl', slides[idx].classList.contains('has-logo-tl'));
+    var slide = slides[idx];
+    var m = maxStep(slide);
+    step = (atStep==null) ? 0 : Math.max(0, Math.min(m, atStep));
+    applySteps(slide, step);
+    curEl.textContent = pad(idx+1);
+    fill.style.width = (((idx+1)/total)*100) + '%';
+  }
+
+  function next(){
+    var slide = slides[idx];
+    if(step < maxStep(slide)){ step++; applySteps(slide, step); }
+    else if(idx < total-1){ show(idx+1, 0); }
+  }
+  function prev(){
+    if(step > 0){ step--; applySteps(slides[idx], step); }
+    else if(idx > 0){ show(idx-1, maxStep(slides[idx-1])); }
+  }
+
+  document.addEventListener('keydown', function(e){
+    switch(e.key){
+      case 'ArrowRight': case ' ': case 'PageDown': e.preventDefault(); next(); break;
+      case 'ArrowLeft':  case 'PageUp': e.preventDefault(); prev(); break;
+      case 'Home': e.preventDefault(); show(0,0); break;
+      case 'End':  e.preventDefault(); show(total-1, 0); break;
+      case 'g': case 'G': document.body.classList.toggle('show-grid'); break;
+    }
+  });
+  document.querySelectorAll('.navzone').forEach(function(z){
+    z.addEventListener('click', function(){ (+z.getAttribute('data-dir')>0)?next():prev(); });
+  });
+  document.getElementById('btnNext').addEventListener('click', next);
+  document.getElementById('btnPrev').addEventListener('click', prev);
+
+  // expose a tiny registration hook for per-slide step handlers
+  window.__slideHook = function(id, fn){
+    var el = document.getElementById(id); if(el){ el.__onstep = fn; }
+  };
+
+  window.addEventListener('load', function(){
+    var parts = location.hash.replace('#','').split('.');
+    var s = parseInt(parts[0],10);
+    var st = parts.length>1 ? parseInt(parts[1],10) : 0;
+    show(isNaN(s) ? 0 : s-1, isNaN(st) ? 0 : st);
+  });
+  show(0,0);
+})();
+</script>
+
+<!-- per-slide animation staging (uses window.__slideHook registered by the engine) -->
+<script>
+(function(){
+  function setOpacity(sel, root, v){
+    root.querySelectorAll(sel).forEach(function(el){ el.style.transition='opacity .45s ease'; el.style.opacity=v; });
+  }
+  function paint(root, id, opts){
+    var el = root.querySelector('#'+id); if(!el) return;
+    el.style.transition='fill .35s ease, stroke .35s ease';
+    if(opts.fill!=null) el.setAttribute('fill', opts.fill);
+    if(opts.stroke!=null) el.setAttribute('stroke', opts.stroke);
+  }
+  // Slide 8 (delta snapshots): stage the timeline by step.
+  // step 0: baseline full + first delta group visible (data-step=1 shows the svg)
+  // step 2: GC line appears
+  // step 3: second full + its deltas + flow to object store
+  // step 4: recovery box (data-step=4)
+  if(window.__slideHook){
+    // Slide 5 (Gardener hierarchy): bottom-up reveal. shoots -> seed -> garden.
+    // Slide 4 (Gardener): logo + name show with the heading from the start (steps 0-1);
+    // steps 2-5 = point list appears in the same place, one item at a time.
+    window.__slideHook('s4', function(step){
+      var root = document.getElementById('s4');
+      var logo = root.querySelector('#s4logo');
+      var list = root.querySelector('#s4list');
+      if(logo) logo.style.opacity = (step<=1) ? 1 : 0;
+      if(list) list.style.opacity = (step>=2) ? 1 : 0;
+      // reveal list items progressively: item i (0-based) shows at step >= i+2
+      root.querySelectorAll('#s4list .s4item').forEach(function(li, i){
+        li.style.transition='opacity .35s ease, transform .35s ease';
+        var on = step >= (i+2);
+        li.style.opacity = on ? 1 : 0;
+        li.style.transform = on ? 'none' : 'translateY(10px)';
+      });
+    });
+
+    window.__slideHook('s5', function(step){
+      var root = document.getElementById('s5');
+      setOpacity('.s5shoots', root, step>=4 ? 1 : 0);
+      setOpacity('.s5seed',   root, step>=5 ? 1 : 0);
+      setOpacity('.s5garden', root, step>=6 ? 1 : 0);
+    });
+
+    // Slide 11 (helm vs operator): step 1 = helm installs; step 2 = helm exits (greyed); step 3 = right panel reveals + loop stages + dotted box.
+    window.__slideHook('s10', function(step){
+      var root = document.getElementById('s10');
+      var GREY='#c4c4bf';
+      // step 1: show arrow + install label + resources box
+      setOpacity('#s10ha',  root, step>=1 ? 1 : 0);
+      setOpacity('#s10hal', root, step>=1 ? 1 : 0);
+      setOpacity('#s10res', root, step>=1 ? 1 : 0);
+      // step 2: helm greys out, "exits" note and moat text appear
+      var exited = step>=2;
+      paint(root,'s10helm',    {stroke: exited?GREY:'var(--hair)'});
+      paint(root,'s10helmlbl', {fill: exited?GREY:'var(--secondary)'});
+      var exitEl = root.querySelector('#s10exit');
+      if(exitEl){ exitEl.style.transition='opacity .4s ease'; exitEl.style.opacity = exited ? 1 : 0; }
+      var moatEl = root.querySelector('#s10moat');
+      if(moatEl){ moatEl.style.transition='opacity .4s ease'; moatEl.style.opacity = exited ? 1 : 0; }
+      // step 3: right panel + loop stages + dotted border box
+      var rightEl = root.querySelector('#s10right');
+      if(rightEl){ rightEl.style.transition='opacity .5s ease'; rightEl.style.opacity = step>=3 ? 1 : 0; }
+      root.querySelectorAll('.s10stage').forEach(function(el){ el.style.transition='opacity .4s ease'; el.style.opacity = step>=3 ? 1 : 0; });
+      root.querySelectorAll('.s10stagebox').forEach(function(el){ el.style.transition='opacity .4s ease'; el.style.opacity = step>=3 ? 1 : 0; });
+    });
+
+    // Slide 6 (2018 journey): staged like slide 12, one stage per press.
+    window.__slideHook('s6', function(step){
+      var root = document.getElementById('s6');
+      setOpacity('.s6helm',  root, step>=3 ? 1 : 0);
+      setOpacity('.s6sts',   root, step>=3 ? 1 : 0);
+      setOpacity('.s6pod',   root, step>=4 ? 1 : 0);
+      setOpacity('.s6store', root, step>=5 ? 1 : 0);
+    });
+
+    // Slide 7 (restoration from full): PVC corrupt -> etcd red -> b-r validates -> restore -> healthy.
+    window.__slideHook('s7', function(step){
+      var root = document.getElementById('s7');
+      var GREEN='var(--green)', GREENSOFT='var(--green-soft)', RED='var(--accent)', REDSOFT='#f7d6d9', HAIR='var(--hair)';
+      // PVC: corrupts at step 2, stays bad through 5, healthy again at 6
+      var pvcBad = (step>=2 && step<6);
+      paint(root,'s7pvc',    {stroke: pvcBad?RED:HAIR, fill: pvcBad?REDSOFT:'#fff'});
+      paint(root,'s7pvclbl', {fill: pvcBad?RED:'var(--secondary)'});
+      // etcd: unhealthy at step 3-5, healthy at 1,2 and again at 6
+      var etcdBad = (step>=3 && step<6);
+      paint(root,'s7etcd',    {stroke: etcdBad?RED:GREEN, fill: etcdBad?REDSOFT:GREENSOFT});
+      paint(root,'s7etcddot', {fill: etcdBad?RED:GREEN});
+      paint(root,'s7etcdlbl', {fill: etcdBad?RED:GREEN});
+      // validate arrow (b-r -> etcd) at step 4 only
+      setOpacity('#s7validate', root, step===4 ? 1 : 0);
+      // restore arrow appears at step 5 only
+      setOpacity('#s7restore', root, step===5 ? 1 : 0);
+      // backup arrow only when healthy (backups are possible): steps 1 and 6+
+      setOpacity('#s7backup',  root, (step<=1 || step>=6) ? 1 : 0);
+      // color the caption chips by state
+      var setChip=function(id, cls){ var c=root.querySelector('#'+id); if(c){ c.classList.remove('ok','hot'); if(cls) c.classList.add(cls); } };
+      setChip('s7c1','ok');   // healthy
+      setChip('s7c2','hot');  // PVC corrupts
+      setChip('s7c3','hot');  // etcd unhealthy
+      setChip('s7c4','hot');  // validate finds corruption
+      setChip('s7c5',null);   // pull latest full (in progress, neutral)
+      setChip('s7c6','ok');   // healthy again
+    });
+
+    // Slide 9 (delta restoration): like s7, but restore pulls full + all deltas after it.
+    window.__slideHook('s8b', function(step){
+      var root = document.getElementById('s8b');
+      var GREEN='var(--green)', GREENSOFT='var(--green-soft)', RED='var(--accent)', REDSOFT='#f7d6d9', HAIR='var(--hair)';
+      var pvcBad = (step>=2 && step<6);
+      paint(root,'s9rpvc',    {stroke: pvcBad?RED:HAIR, fill: pvcBad?REDSOFT:'#fff'});
+      paint(root,'s9rpvclbl', {fill: pvcBad?RED:'var(--secondary)'});
+      var etcdBad = (step>=3 && step<6);
+      paint(root,'s9retcd',    {stroke: etcdBad?RED:GREEN, fill: etcdBad?REDSOFT:GREENSOFT});
+      paint(root,'s9retcddot', {fill: etcdBad?RED:GREEN});
+      paint(root,'s9retcdlbl', {fill: etcdBad?RED:GREEN});
+      // validate arrow at step 4; restore arrow at step 5
+      setOpacity('#s9rvalidate', root, step===4 ? 1 : 0);
+      setOpacity('#s9rrestore', root, step===5 ? 1 : 0);
+      // backup arrow only when healthy (backups are possible): steps 1 and 6+
+      setOpacity('#s9rbackup',  root, (step<=1 || step>=6) ? 1 : 0);
+      // color the caption chips by state
+      var setChip=function(id, cls){ var c=root.querySelector('#'+id); if(c){ c.classList.remove('ok','hot'); if(cls) c.classList.add(cls); } };
+      setChip('s9rc1','ok'); setChip('s9rc2','hot'); setChip('s9rc3','hot'); setChip('s9rc4','hot'); setChip('s9rc5',null); setChip('s9rc6','ok');
+    });
+
+    window.__slideHook('s8', function(step){
+      var root = document.getElementById('s8');
+      var GREY='#b9b9b4';
+      // step 0: full T0 + 6 deltas (visible). step 1: second full T1 + 3 deltas. step 2: recovery box.
+      var showFull2 = step>=1 ? 1 : 0;
+      setOpacity('.s8full2',  root, showFull2);
+      setOpacity('.s8deltas2', root, showFull2);
+      // once T1 supersedes T0, grey out T0 + its deltas (kept for SLA, not actively used)
+      var superseded = step>=1;
+      paint(root,'s8f1rect', {fill: superseded?GREY:'var(--green)'});
+      paint(root,'s8f1lbl',  {fill: superseded?GREY:'var(--green)'});
+      root.querySelectorAll('.s8d1r').forEach(function(el){ el.style.transition='fill .35s ease'; el.setAttribute('fill', superseded?GREY:'var(--cobalt)'); });
+      root.querySelectorAll('.s8d1t').forEach(function(el){ el.style.transition='fill .35s ease'; el.setAttribute('fill', superseded?GREY:'var(--cobalt)'); });
+      setOpacity('#s8sla', root, superseded ? 1 : 0);
+    });
+
+    // Slide 9 (defrag): COMPACTED side reveals once the "defrag" step is reached.
+    // s9 hook — disabled: slide 10 (scheduled defragmentation) is skipped for time. Re-enable with the slide.
+    // window.__slideHook('s9', function(step){
+    //   var root = document.getElementById('s9');
+    //   setOpacity('.s9comp', root, step>=2 ? 1 : 0);
+    // });
+
+    // Slide 12 (druid reconcile): fan components, then STS, then pod, then store.
+    window.__slideHook('s12', function(step){
+      var root = document.getElementById('s12');
+      setOpacity('.s12comp',  root, step>=1 ? 1 : 0);
+      setOpacity('.s12sts',   root, step>=2 ? 1 : 0);
+      setOpacity('.s12pod',   root, step>=3 ? 1 : 0);
+      setOpacity('.s12store', root, step>=4 ? 1 : 0);
+    });
+
+    // Slide 19b (migrate an existing cluster): list -> apply CR -> reconcile ->
+    // target joins over peer protocol -> old members removed, fully managed.
+    window.__slideHook('s19b', function(step){
+      var root = document.getElementById('s19b');
+      setOpacity('.s19c1', root, step>=1 ? 1 : 0);
+      setOpacity('.s19c2', root, step>=2 ? 1 : 0);
+      setOpacity('.s19c3', root, step>=3 ? 1 : 0);
+      setOpacity('.s19c4', root, step>=4 ? 1 : 0);
+    });
+
+    // Slide 15 (HA learner scale-out): one member at a time, learner -> follower.
+    // Slide 15 (HA): list on the left; each item plays its animation on the right.
+    // steps 1-4 = scale-out, 5-8 = PVC corruption, 9-11 = quorum-aware maintenance.
+    window.__slideHook('s14', function(step){
+      var root = document.getElementById('s14');
+      var GREEN='var(--green)', GREENSOFT='var(--green-soft)', COBALT='var(--cobalt)', RED='var(--accent)', REDSOFT='#f7d6d9';
+
+      // step 0: heading only — hide diagram wrapper and list (list revealed by data-step=1)
+      var dgWrap = root.querySelector('#s14dgWrap');
+      if(dgWrap){ dgWrap.style.transition='opacity .4s ease'; dgWrap.style.opacity = step>=2 ? 1 : 0; }
+
+      // which section are we in?
+      // step 1 = list revealed; steps 2-5 = scale; steps 6-10 = pvc; steps 11-15 = maint
+      var key = step<=1 ? 'scale' : (step<=5 ? 'scale' : (step<=10 ? 'pvc' : 'maint'));
+      root.querySelectorAll('#s14list .s14item').forEach(function(li){ li.classList.toggle('active', step>=1 && li.getAttribute('data-k')===key); });
+
+      var show=function(id,on){ var el=root.querySelector('#'+id); if(el) el.style.display = on?'block':'none'; };
+      show('s14dgScale', key==='scale'); show('s14dgPvc', key==='pvc'); show('s14dgMaint', key==='maint');
+
+      // helper: set chip active state (clears all three color variants first)
+      var setC=function(id,cls,on){ var c=root.querySelector('#'+id); if(!c) return; c.classList.remove('ok','hot','cobalt'); c.style.opacity = on?1:.35; if(on&&cls) c.classList.add(cls); };
+
+      // --- scale-out: steps 2-5 ---
+      // step 2: etcd-1 joins as learner; step 3: etcd-1 promoted, etcd-2 joins as learner
+      // step 4: etcd-2 promoted; step 5: quorum label
+      setOpacity('.s14m1learn', root, step===2 ? 1 : 0);
+      setOpacity('.s14m1vote',  root, step>=3 ? 1 : 0);
+      setOpacity('.s14m2learn', root, step===3 ? 1 : 0);
+      setOpacity('.s14m2vote',  root, step>=4 ? 1 : 0);
+      setOpacity('.s14quorum',  root, step>=5 ? 1 : 0);
+      setC('s14c1', null,  step>=2); setC('s14c2', 'ok', step>=3); setC('s14c3', 'ok', step>=5);
+
+      // --- PVC corruption: steps 6-10 ---
+      // 6: PVC + etcd-2 turn red (corrupt);
+      // 7: its OWN b-r detects (red arrow b-r -> etcd, "detection");
+      // 8: same b-r re-adds member as learner (blue arrow b-r -> etcd; etcd-2 turns cobalt);
+      // 9: log replication from leader's etcd outer edge -> etcd-2's etcd outer edge;
+      // 10: its OWN b-r promotes learner -> voting follower (green arrow; etcd-2 turns green)
+      var pvcBad    = step>=6 && step<=9;
+      var memBad    = step>=6 && step<=7;
+      var memLearner= step>=8 && step<=9;
+      var memOk     = step>=10;
+      paint(root,'s14ppvc',    {stroke: pvcBad?RED:'var(--hair)', fill: pvcBad?REDSOFT:'#fff'});
+      paint(root,'s14ppvclbl', {fill:   pvcBad?RED:'var(--secondary)'});
+      paint(root,'s14pmem',    {stroke: memBad?RED:(memLearner?COBALT:GREEN),
+                                 fill:   memBad?REDSOFT:(memLearner?'#fff':GREENSOFT)});
+      paint(root,'s14pmemdot', {fill:   memBad?RED:(memLearner?COBALT:GREEN)});
+      paint(root,'s14pmemlbl', {fill:   memBad?RED:(memLearner?COBALT:GREEN)});
+      var subEl = root.querySelector('#s14pmemsub'); if(subEl){ subEl.style.opacity = memLearner?1:0; subEl.setAttribute('fill', COBALT); }
+      setOpacity('#s14pbr',         root, step===7 ? 1 : 0);
+      setOpacity('#s14paddlearner', root, step===8 ? 1 : 0);
+      setOpacity('#s14presync',     root, step===9 ? 1 : 0);
+      setOpacity('#s14ppromote',    root, step>=10 ? 1 : 0);
+      setC('s14pc1','hot', step>=6); setC('s14pc2','hot', step>=7); setC('s14pc3','cobalt', step>=8); setC('s14pc4','cobalt', step>=9); setC('s14pc5','ok', step>=10);
+
+      // --- quorum-aware maintenance (snapshot leadership handoff): steps 11-15 ---
+      // 11: all healthy, etcd-0's leading b-r snapshots to store
+      // 12: etcd-0 dies mid-snapshot -> red, snapshot interrupted
+      // 13: leader election among survivors
+      // 14: etcd-1 elected new leader
+      // 15: etcd-1's b-r becomes leading b-r, snapshot resumes
+      var m0dead = step>=12;
+      var m1lead = step>=14;
+      // etcd-0 hexagon: leader (green) until it dies at step 12 (pod stays neutral)
+      paint(root,'s14m0etcd', {stroke: m0dead?RED:GREEN, fill: m0dead?REDSOFT:GREENSOFT});
+      paint(root,'s14m0lbl',  {fill:   m0dead?RED:GREEN});
+      paint(root,'s14m0role', {fill:   m0dead?RED:GREEN});
+      var m0role = root.querySelector('#s14m0role'); if(m0role) m0role.textContent = m0dead ? 'unhealthy' : 'leader';
+      // etcd-0's b-r stops being leading once dead: dim it
+      var m0br = root.querySelector('#s14m0br'); if(m0br){ m0br.style.opacity = m0dead?0.4:1; }
+      var m0brl = root.querySelector('#s14m0brlbl'); if(m0brl){ m0brl.style.opacity = m0dead?0.4:1; }
+      // etcd-1: follower -> leader at step 14
+      var m1role = root.querySelector('#s14m1role'); if(m1role) m1role.textContent = m1lead ? 'leader' : 'follower';
+      // leader ring: subtle green outline on the current leader (etcd-0 until re-election, then etcd-1)
+      setOpacity('#s14mring0',    root, m1lead ? 0 : 0.7);
+      setOpacity('#s14mring1',    root, m1lead ? 0.7 : 0);
+      // snapshot arrows
+      setOpacity('#s14msnap0', root, (step>=11 && step<=11) ? 1 : 0);
+      setOpacity('#s14msnapx', root, (step>=12 && step<=13) ? 1 : 0);
+      setOpacity('#s14melect', root, (step===13) ? 1 : 0);
+      setOpacity('#s14msnap1', root, (step>=15) ? 1 : 0);
+      // kicker line changes to match phase
+      var mkick = root.querySelector('#s14mkick');
+      if(mkick){ mkick.textContent = step>=14 ? 'New leader elected, its backup-restore takes over' : (step>=12 ? 'Leader dies mid-snapshot, cluster keeps quorum' : 'Snapshots always run on the leading backup-restore'); }
+      setC('s14mc1','ok', step>=11); setC('s14mc2','hot', step>=12); setC('s14mc3','cobalt', step>=13); setC('s14mc4',null, step>=14); setC('s14mc5','ok', step>=15);
+    });
+
+    // Slide 16 (Etcd CR walkthrough): exclusive highlight synced list <-> yaml.
+    var CR_SEGS = ['meta','replicas','storage','etcd','store','policy'];
+    window.__slideHook('s16', function(step){
+      var root = document.getElementById('s16');
+      var sec = CR_SEGS[Math.max(0, Math.min(CR_SEGS.length-1, step))];
+      root.querySelectorAll('#crlist .critem').forEach(function(li){
+        li.classList.toggle('active', li.getAttribute('data-sec')===sec);
+      });
+      root.querySelectorAll('#cryaml .crseg').forEach(function(seg){
+        seg.classList.toggle('lit', seg.getAttribute('data-seg')===sec);
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>
